@@ -1,0 +1,4 @@
+[package]
+name = "proto-sash"
+version = "0.1.0"
+authors = ["ilammy <a.lozovsky@gmail.com>"]
