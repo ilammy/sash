@@ -21,6 +21,39 @@ pub enum Token {
 
     /// Non-significant comment
     Comment,
+
+    /// Left (opening) parenthesis `(`
+    Lparen,
+
+    /// Right (closing) parenthesis `)`
+    Rparen,
+
+    /// Left (opening) bracket `[`
+    Lbrack,
+
+    /// Right (closing) bracket `]`
+    Rbrack,
+
+    /// Left (opening) brace `{`
+    Lbrace,
+
+    /// Right (closing) brace `}`
+    Rbrace,
+
+    /// Dot `.`
+    Dot,
+
+    /// Comma `,`
+    Comma,
+
+    /// Colon `:`
+    Colon,
+
+    /// Double colon `::`
+    Dualcolon,
+
+    /// Semicolon `;`
+    Semicolon,
 }
 
 /// Span of a token
@@ -201,6 +234,37 @@ impl<'a> StringScanner<'a> {
                         self.scan_block_comment();
                     }
                     _ => { panic!("unimplemented"); }
+                }
+            }
+            '(' => { self.read(); self.tok = Token::Lparen; }
+            ')' => { self.read(); self.tok = Token::Rparen; }
+            '[' => { self.read(); self.tok = Token::Lbrack; }
+            ']' => { self.read(); self.tok = Token::Rbrack; }
+            '{' => { self.read(); self.tok = Token::Lbrace; }
+            '}' => { self.read(); self.tok = Token::Rbrace; }
+            ',' => { self.read(); self.tok = Token::Comma; }
+            ';' => { self.read(); self.tok = Token::Semicolon; }
+            '.' => {
+                match self.peek() {
+                    Some('.') => {
+                        panic!("unimplemented"); // identifiers
+                    }
+                    _ => {
+                        self.read();
+                        self.tok = Token::Dot;
+                    }
+                }
+            }
+            ':' => {
+                self.read();
+                match self.cur {
+                    Some(':') => {
+                        self.read();
+                        self.tok = Token::Dualcolon;
+                    }
+                    _ => {
+                        self.tok = Token::Colon;
+                    }
                 }
             }
             _ => { panic!("unimplemented"); }
@@ -436,6 +500,49 @@ mod tests {
     fn block_comment_line_comment_allows_unterminated_blocks() {
         check(&[
             ScannerTestSlice("// /* doesn't matter", Token::Comment),
+        ], &[], &[]);
+    }
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // Brackets and other fixed tokens
+
+    #[test]
+    fn brackets() {
+        check(&[
+            ScannerTestSlice("(",    Token::Lparen),
+            ScannerTestSlice("]",    Token::Rbrack),
+            ScannerTestSlice("\n\n", Token::Whitespace),
+            ScannerTestSlice("}",    Token::Rbrace),
+            ScannerTestSlice("}",    Token::Rbrace),
+            ScannerTestSlice(" ",    Token::Whitespace),
+            ScannerTestSlice("[",    Token::Lbrack),
+            ScannerTestSlice("[",    Token::Lbrack),
+            ScannerTestSlice("\t",   Token::Whitespace),
+            ScannerTestSlice("(",    Token::Lparen),
+            ScannerTestSlice("{",    Token::Lbrace),
+            ScannerTestSlice("\r\n", Token::Whitespace),
+            ScannerTestSlice(")",    Token::Rparen),
+            ScannerTestSlice(")",    Token::Rparen),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn punctuation() {
+        check(&[
+            ScannerTestSlice(",",  Token::Comma),
+            ScannerTestSlice(".",  Token::Dot),
+            ScannerTestSlice("::", Token::Dualcolon),
+            ScannerTestSlice(".",  Token::Dot),
+            ScannerTestSlice(":",  Token::Colon),
+            ScannerTestSlice(" ",  Token::Whitespace),
+            ScannerTestSlice(":",  Token::Colon),
+            ScannerTestSlice(".",  Token::Dot),
+            ScannerTestSlice(";",  Token::Semicolon),
+            ScannerTestSlice("(",  Token::Lparen),
+            ScannerTestSlice(";",  Token::Semicolon),
+            ScannerTestSlice(";",  Token::Semicolon),
+            ScannerTestSlice(",",  Token::Comma),
+            ScannerTestSlice(",",  Token::Comma),
         ], &[], &[]);
     }
 
