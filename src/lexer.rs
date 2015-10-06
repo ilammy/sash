@@ -60,6 +60,12 @@ pub enum Token {
 
     /// Float literal
     Float,
+
+    /// A single character
+    Character,
+
+    /// Marker token denoting invalid character sequences
+    Unrecognized,
 }
 
 /// Span of a token
@@ -280,6 +286,9 @@ impl<'a> StringScanner<'a> {
             }
             '0'...'9' => {
                 self.scan_number();
+            }
+            '\'' => {
+                self.scan_character_literal();
             }
             _ => { panic!("unimplemented"); }
         }
@@ -538,6 +547,239 @@ impl<'a> StringScanner<'a> {
         if exponent_digits == 0 {
             self.report.error(Span::new(exponent_start, self.prev_pos),
                 "The exponent contains no valid digits");
+        }
+    }
+
+    /// Scan over a single character literal
+    fn scan_character_literal(&mut self) {
+        // A character literal is a single quote...
+        assert!(self.cur == Some('\''));
+        self.read();
+        let init = self.cur;
+
+        // ...followed by one character...
+        if !self.at_eof() {
+            self.scan_one_character();
+        }
+
+        match self.cur {
+            // ... and then by another single quote. All's fine here.
+            Some('\'') => {
+                self.read();
+                self.tok = Token::Character;
+            }
+            // The file ended prematurely
+            None => {
+                self.report.error(Span::new(self.start, self.prev_pos),
+                    "Unexpected end of file. Expected character literal.");
+                self.tok = Token::Unrecognized;
+            }
+            // There is no terminating quote. Okay, go on scanning presuming that the user
+            // meant to type a short string literal but used single quotes for some reason.
+            _ => {
+                // Special case: ''
+                if init == Some('\'') {
+                    self.report.error(Span::new(self.start, self.prev_pos),
+                        "A character literal must contain a character");
+                    self.tok = Token::Character;
+                    return;
+                }
+
+                let presumed_end = self.prev_pos;
+
+                while !self.at_eof() {
+                    match self.cur.unwrap() {
+                        '\r' if self.peek() == Some('\n') => {
+                            break;
+                        }
+                        '\n' | '\'' => { break; }
+                         _          => { self.scan_one_character(); }
+                    }
+                }
+
+                match self.cur {
+                    // We have found a closing quote on the same line
+                    Some('\'') => {
+                        self.read();
+                        self.report.error(Span::new(self.start, self.prev_pos),
+                            "A character literal must contain only one character");
+                        self.tok = Token::Character;
+                    }
+                    // There were no quotes on this line, maybe the first one was an error
+                    Some('\r') | Some('\n') => {
+                        self.report.error(Span::new(self.start, presumed_end),
+                            "Missing closing quote (').");
+                        self.tok = Token::Unrecognized;
+                    }
+                    // The file ended prematurely
+                    None => {
+                        self.report.error(Span::new(self.start, presumed_end),
+                            "Unexpected end of file. Expected a closing single quote.");
+                        self.tok = Token::Unrecognized;
+                    }
+                    Some(_) => { unreachable!(); } // due to the loop above
+                }
+            }
+        }
+        // TODO: type suffix
+    }
+
+    /// Scan over a single character or escape sequence
+    fn scan_one_character(&mut self) {
+        assert!(self.cur.is_some());
+
+        match self.cur.unwrap() {
+            // A single backslash or an escape sequence
+            '\\' => {
+                let p = self.peek();
+                if p.is_none() || p == Some('\'') {
+                    self.read();
+                } else {
+                    self.scan_escape_sequence();
+                }
+            }
+            // Normal line endings are not scanned over, they should be handled by the caller
+            '\n' => { }
+            // Bare CR characters are prohibited as they are often results of VCS misconfiguration
+            // or other kind of blind automated tampering with source file contents. None of the
+            // popular operating systems uses bare CRs as a line ending marker, and Sash does not
+            // recognize them as such.
+            '\r' => {
+                if self.peek() != Some('\n') {
+                    self.report.error(Span::new(self.prev_pos, self.pos),
+                        "Bare CR characters must be escaped");
+                    self.read();
+                }
+            }
+            // Everything else is just a single character
+            _ => {
+                self.read();
+            }
+        }
+    }
+
+    /// Scan over a single escape sequence
+    fn scan_escape_sequence(&mut self) {
+        assert!(self.cur == Some('\\'));
+        self.read();
+
+        match self.cur.unwrap() {
+            '0' | 't' | 'n' | 'r' | '"' | '\\' => { self.read(); }
+            'x' => { self.scan_escape_byte(); }
+            'u' => { self.scan_escape_unicode(); }
+             _ => {
+                match self.cur.unwrap() {
+                    '\n' => {
+                        self.report.error(Span::new(self.prev_pos, self.prev_pos),
+                            "Line continuations cannot be used in character literals");
+                        self.read();
+                    }
+                    '\r' if self.peek() == Some('\n') => {
+                        self.report.error(Span::new(self.prev_pos, self.prev_pos),
+                            "Line continuations cannot be used in character literals");
+                        self.read();
+                        self.read();
+                    }
+                    _ => {
+                        if self.cur.unwrap() == '\r' {
+                            self.report.error(Span::new(self.prev_pos, self.pos),
+                                "Bare CR character");
+                        }
+                        let start = self.prev_pos - 1;
+                        self.read();
+                        self.report.error(Span::new(start, self.prev_pos),
+                            "Unknown escape sequence");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Scan over a single byte escape sequence
+    fn scan_escape_byte(&mut self) {
+        assert!(self.cur == Some('x'));
+        self.read();
+
+        let mut digits = 0;
+        let digits_start = self.prev_pos;
+        while !self.at_eof() {
+            let c = self.cur.unwrap();
+            if !StringScanner::is_digit(c, 16) {
+                break;
+            }
+            digits += 1;
+            self.read();
+        }
+        let digits_end = self.prev_pos;
+
+        if digits != 2 {
+            self.report.error(Span::new(digits_start, digits_end),
+                "Expected two hexadecimal digits.");
+        }
+    }
+
+    /// Scan over a single Unicode escape sequence
+    fn scan_escape_unicode(&mut self) {
+        assert!(self.cur == Some('u'));
+        self.read();
+
+        let brace_start = self.prev_pos;
+
+        match self.cur {
+            // All is well, a Unicode scalar starts with a '{'
+            Some('{') => {
+                self.read();
+            }
+            // Stuff goes right away, but we can live with this
+            _ => {
+                self.report.error(Span::new(self.prev_pos, self.prev_pos),
+                    "Unicode scalar value must start with '{'");
+            }
+        }
+
+        let mut empty_braces = true;
+        let mut invalid_hex = false;
+
+        loop {
+            match self.cur {
+                // All is well, a Unicode scalar ends with a '}'
+                Some('}') => {
+                    self.read();
+                    break;
+                }
+                // Encountered proper end of a character literal, but have not seen '}'
+                Some('\'') => {
+                    self.report.error(Span::new(self.prev_pos, self.prev_pos),
+                        "Unicode scalar value must end with '}'");
+                    break;
+                }
+                // Encountered unexpected end of a character literal, defer error reporting
+                // to scan_character_literal(), this will not be considered a character at all
+                Some('\n') | None => {
+                    return;
+                }
+                // Otherwise, report anything that is not a hex digit and go on
+                Some(_) => {
+                    empty_braces = false;
+                    let c = self.cur.unwrap();
+                    if !StringScanner::is_digit(c, 16) {
+                        invalid_hex = true;
+                    }
+                }
+            }
+            self.read();
+        }
+
+        let brace_end = self.prev_pos;
+
+        if empty_braces {
+            self.report.error(Span::new(brace_start, brace_end),
+                "Unicode scalar value is empty");
+        }
+
+        if invalid_hex {
+            self.report.error(Span::new(brace_start, brace_end),
+                "Incorrect Unicode scalar value. Expected only hex digits");
         }
     }
 }
@@ -947,6 +1189,294 @@ mod tests {
     }
 
     // TODO: combined errors
+
+    // TODO: type suffixes
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // Characters
+
+    #[test]
+    fn character_ascii() {
+        check(&[
+            ScannerTestSlice("'a'",  Token::Character),
+            ScannerTestSlice("   ",  Token::Whitespace),
+            ScannerTestSlice("'b'",  Token::Character),
+            ScannerTestSlice("   ",  Token::Whitespace),
+            ScannerTestSlice("'0'",  Token::Character),
+            ScannerTestSlice("   ",  Token::Whitespace),
+            ScannerTestSlice("'''",  Token::Character),
+            ScannerTestSlice("   ",  Token::Whitespace),
+            ScannerTestSlice("' '",  Token::Character),
+            ScannerTestSlice("   ",  Token::Whitespace),
+            ScannerTestSlice("'''",  Token::Character),
+            ScannerTestSlice("'''",  Token::Character),
+            ScannerTestSlice("'\"'", Token::Character),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn character_unicode() {
+        check(&[
+            // Surrogates are not valid UTF-8 text and should have been reported before.
+            // Rust does not even allow placing them into strings.
+            ScannerTestSlice("'\u{0123}'",   Token::Character),
+            ScannerTestSlice(" ",            Token::Whitespace),
+            ScannerTestSlice("'\u{07F7}'",   Token::Character),
+            ScannerTestSlice(" ",            Token::Whitespace),
+            ScannerTestSlice("'\u{10ba}'",   Token::Character),
+            ScannerTestSlice(" ",            Token::Whitespace),
+            ScannerTestSlice("'\u{B0e6}'",   Token::Character),
+            ScannerTestSlice(" ",            Token::Whitespace),
+            ScannerTestSlice("'\u{100300}'", Token::Character),
+            ScannerTestSlice(" ",            Token::Whitespace),
+            ScannerTestSlice("'\u{0103CA}'", Token::Character),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn character_control() {
+        check(&[
+            ScannerTestSlice("'\0'",   Token::Character),  // Control characters can be used in
+            ScannerTestSlice(" ",      Token::Whitespace), // character literals (technically).
+            ScannerTestSlice("'\t'",   Token::Character),  // They can be rendered weirdly by text
+            ScannerTestSlice(" ",      Token::Whitespace), // editors, but we do not care much.
+            ScannerTestSlice("'\x04'", Token::Character),
+            ScannerTestSlice(" ",      Token::Whitespace),
+            ScannerTestSlice("'\x08'", Token::Character),
+            ScannerTestSlice(" ",      Token::Whitespace),
+            ScannerTestSlice("'\x0B'", Token::Character),
+            ScannerTestSlice(" ",      Token::Whitespace),
+            ScannerTestSlice("'\x7F'", Token::Character),
+            ScannerTestSlice(" ",      Token::Whitespace),
+            ScannerTestSlice("'\u{2028}'", Token::Character),
+            ScannerTestSlice(" ",          Token::Whitespace),
+            ScannerTestSlice("'\u{2029}'", Token::Character),
+            ScannerTestSlice(" ",          Token::Whitespace),
+            ScannerTestSlice("'\u{0086}'", Token::Character),
+            ScannerTestSlice(" ",          Token::Whitespace),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn character_escape_sequences() {
+        check(&[
+            ScannerTestSlice(r"'\0'",  Token::Character),
+            ScannerTestSlice(" ",      Token::Whitespace),
+            ScannerTestSlice(r"'\t'",  Token::Character),
+            ScannerTestSlice(" ",      Token::Whitespace),
+            ScannerTestSlice(r"'\r'",  Token::Character),
+            ScannerTestSlice(" ",      Token::Whitespace),
+            ScannerTestSlice(r"'\n'",  Token::Character),
+            ScannerTestSlice(" ",      Token::Whitespace),
+            ScannerTestSlice(r"'\'",   Token::Character), // backslash alone is okay
+            ScannerTestSlice(" ",      Token::Whitespace),
+            ScannerTestSlice(r"'\\'",  Token::Character), // escaped is fine as well
+            ScannerTestSlice(" ",      Token::Whitespace),
+            ScannerTestSlice("'\\\"'", Token::Character), // escaped double-quote
+        ], &[], &[]);                                     // can be copy-pasted from strings
+    }
+
+    #[test]
+    fn character_unicode_escapes() {
+        check(&[
+            ScannerTestSlice(r"'\x00'",         Token::Character),
+            ScannerTestSlice(r" ",              Token::Whitespace),
+            ScannerTestSlice(r"'\x35'",         Token::Character),  // The scanner does not really
+            ScannerTestSlice(r" ",              Token::Whitespace), // care about contents. It only
+            ScannerTestSlice(r"'\x1f'",         Token::Character),  // checks that a literal has
+            ScannerTestSlice(r" ",              Token::Whitespace), // expected number of digits.
+            ScannerTestSlice(r"'\xFF'",         Token::Character),
+            ScannerTestSlice(r" ",              Token::Whitespace),
+            ScannerTestSlice(r"'\u{12}'",       Token::Character),
+            ScannerTestSlice(r" ",              Token::Whitespace),
+            ScannerTestSlice(r"'\u{DEAD}'",     Token::Character),  // It also does not care about
+            ScannerTestSlice(r" ",              Token::Whitespace), // Unicode surrogates...
+            ScannerTestSlice(r"'\u{fffff}'",    Token::Character),
+            ScannerTestSlice(r" ",              Token::Whitespace),
+            ScannerTestSlice(r"'\u{99999999}'", Token::Character),  // or any Unicode range at all.
+            ScannerTestSlice(r" ",              Token::Whitespace),
+            ScannerTestSlice(r"'\u{0}'",        Token::Character),
+            ScannerTestSlice(r" ",              Token::Whitespace),
+            ScannerTestSlice(r"'\u{00000005}'", Token::Character),
+            ScannerTestSlice(r" ",              Token::Whitespace), // Really.
+            ScannerTestSlice(r"'\u{f0f0f0deadbeef00012345}'", Token::Character),
+        ], &[], &[]);
+    }
+
+    // We adopt a simple heuristic for the case of missing closing quotes in character literals.
+    // If we see a quote on the same line then our incorrect multi-character literal spans between
+    // these quotes (it may mean a string with incorrect quotes). If we find no quotes on the line
+    // then maybe the quote character is missing after that single character we saw, or maybe that
+    // first quote is erroneously placed, or maybe there are several incorrect characters here.
+    // As with strings, it's better to not try to guess the meaning of arbitrary invalid sequences.
+    // We do not backtrack so we just eat everything up to the line end as an unrecognized token.
+    //
+    // TODO: shouldn't this be placed near the code that does this? the tests could xref to it.
+
+    #[test]
+    fn character_multicharacter_literals() {
+        check(&[
+            ScannerTestSlice("'ab'",                Token::Character),
+            ScannerTestSlice(" ",                   Token::Whitespace),
+            ScannerTestSlice("'\u{00E6}\u{0113}'",  Token::Character),
+            ScannerTestSlice(" ",                   Token::Whitespace),
+            ScannerTestSlice(r"'\x31\x32'",         Token::Character),
+            ScannerTestSlice(" ",                   Token::Whitespace),
+            ScannerTestSlice(r"'\u{123}\u{4567}'",  Token::Character),
+        ], &[ Span::new(0, 4), Span::new(5, 11), Span::new(12, 22), Span::new(23, 40) ], &[]);
+    }
+
+    #[test]
+    fn character_missing_quotes() {
+        check(&[
+            ScannerTestSlice("'ab some + thing", Token::Unrecognized),
+            ScannerTestSlice("\n",               Token::Whitespace),
+            ScannerTestSlice("'''",              Token::Character),
+            ScannerTestSlice("', more",          Token::Unrecognized),
+            ScannerTestSlice("\r\n",             Token::Whitespace),
+            ScannerTestSlice("''",               Token::Character), // special case
+            ScannerTestSlice(",",                Token::Comma),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice(".",                Token::Dot),
+            ScannerTestSlice("'test\rline'",     Token::Character),
+            ScannerTestSlice("'another\rtest",   Token::Unrecognized),
+        ], &[ Span::new(0, 2), Span::new(20, 22), Span::new(29, 31), Span::new(39, 40),
+              Span::new(34, 45), Span::new(53, 54), Span::new(45, 47) ], &[]);
+    }
+
+    #[test]
+    fn character_premature_termination() {
+        check(&[ ScannerTestSlice("'",      Token::Unrecognized) ], &[ Span::new(0, 1) ], &[]);
+        check(&[ ScannerTestSlice("'a",     Token::Unrecognized) ], &[ Span::new(0, 2) ], &[]);
+        check(&[ ScannerTestSlice("'\\",    Token::Unrecognized) ], &[ Span::new(0, 2) ], &[]);
+        check(&[ ScannerTestSlice("'\t",    Token::Unrecognized) ], &[ Span::new(0, 2) ], &[]);
+        check(&[ ScannerTestSlice("'\\x",   Token::Unrecognized) ], &[ Span::new(3, 3),
+                                                                       Span::new(0, 3) ], &[]);
+        check(&[ ScannerTestSlice("'\\y",   Token::Unrecognized) ], &[ Span::new(1, 3),
+                                                                       Span::new(0, 3) ], &[]);
+        check(&[ ScannerTestSlice("'\\u",   Token::Unrecognized) ], &[ Span::new(3, 3),
+                                                                       Span::new(0, 3) ], &[]);
+        check(&[ ScannerTestSlice("'\\u{",  Token::Unrecognized) ], &[ Span::new(0, 4) ], &[]);
+        check(&[ ScannerTestSlice("'\\u{}", Token::Unrecognized) ], &[ Span::new(3, 5),
+                                                                       Span::new(0, 5) ], &[]);
+    }
+
+    #[test]
+    fn character_bare_crs_and_line_endings() {
+        check(&[
+            // Bare carrige returns are reported as misplaced restricted characters
+            ScannerTestSlice("'\r'",         Token::Character),
+            ScannerTestSlice(" ",            Token::Whitespace),
+            ScannerTestSlice("'Carr\riage'", Token::Character),
+            ScannerTestSlice(" ",            Token::Whitespace),
+            // But proper line endings are treated as markers of missing closing quotes
+            ScannerTestSlice("'",            Token::Unrecognized),
+            ScannerTestSlice("\n",           Token::Whitespace),
+            ScannerTestSlice("' '",          Token::Character),
+            ScannerTestSlice(" ",            Token::Whitespace),
+            ScannerTestSlice("'",            Token::Unrecognized),
+            ScannerTestSlice("\r\n",         Token::Whitespace),
+            ScannerTestSlice("'",            Token::Unrecognized),
+        ], &[ Span::new( 1,  2), Span::new( 9, 10), Span::new( 4, 15), Span::new(16, 17),
+              Span::new(22, 23), Span::new(25, 26) ], &[]);
+    }
+
+    #[test]
+    fn character_incorrect_unicode_escape_length() {
+        check(&[
+            ScannerTestSlice(r"'\x'",      Token::Character),
+            ScannerTestSlice(r" ",         Token::Whitespace),
+            ScannerTestSlice(r"'\x1'",     Token::Character),
+            ScannerTestSlice(r" ",         Token::Whitespace),
+            ScannerTestSlice(r"'\x123'",   Token::Character),
+            ScannerTestSlice(r" ",         Token::Whitespace),
+            ScannerTestSlice(r"'\u{}'",    Token::Character),
+        ], &[ Span::new(3, 3), Span::new(8, 9), Span::new(14, 17), Span::new(22, 24) ], &[]);
+    }
+
+    // A similar heuristic is used for missing curly braces.
+    // If character termination quote is seen before a brace, the brace is inserted.
+    // If no character termination quote is found until the line ending, the whole literal
+    // is considered unrecognized token with an error message about missing brace.
+    //
+    // TODO: the same as earlier
+
+    #[test]
+    fn character_incorrect_unicode_braces() {
+        check(&[
+            ScannerTestSlice(r"'\u{123'",               Token::Character),
+            ScannerTestSlice(r" ",                      Token::Whitespace),
+            ScannerTestSlice(r"'\u{'",                  Token::Character),
+            ScannerTestSlice(r" ",                      Token::Whitespace),
+            ScannerTestSlice(r"'\u{uiui}'",             Token::Character),
+            ScannerTestSlice(r" ",                      Token::Whitespace),
+            ScannerTestSlice(r"'\u{uiui'",              Token::Character),
+            ScannerTestSlice(r" ",                      Token::Whitespace),
+            ScannerTestSlice(r"'\u{some long string}'", Token::Character),
+            ScannerTestSlice(r" ",                      Token::Whitespace),
+            ScannerTestSlice(r"'\u{some long string'",  Token::Character),
+            ScannerTestSlice(r" ",                      Token::Whitespace),
+            ScannerTestSlice(r"'\u{123, missing",       Token::Unrecognized),
+            ScannerTestSlice("\n",                      Token::Whitespace),
+            ScannerTestSlice(r"'\u{more missing",       Token::Unrecognized),
+        ], &[ Span::new( 7,  7), Span::new(13, 13), Span::new(12, 13), Span::new(18, 24),
+              Span::new(34, 34), Span::new(29, 34), Span::new(39, 57), Span::new(79, 79),
+              Span::new(62, 79), Span::new(81, 97), Span::new(98, 114) ], &[]);
+    }
+
+    #[test]
+    fn character_unicode_missing_digits() {
+        check(&[
+            ScannerTestSlice(r"'\u'",       Token::Character),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice(r"'\u}'",      Token::Character),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice(r"'\uguu~'",   Token::Character),
+        ], &[ Span::new( 3,  3), Span::new( 3,  3), Span::new( 3,  3), Span::new( 8,  8),
+              Span::new( 8,  9), Span::new(14, 14), Span::new(18, 18), Span::new(14, 18),
+        ], &[]);
+    }
+
+    #[test]
+    fn character_unknown_escapes() {
+        check(&[
+            // Unsupported C escapes
+            ScannerTestSlice(r"'\a'",       Token::Character),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice(r"'\b'",       Token::Character),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice(r"'\f'",       Token::Character),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice(r"'\v'",       Token::Character),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice(r"'\?'",       Token::Character),
+            ScannerTestSlice(" ",           Token::Whitespace),
+
+            // Unsupported hell-knows-whats
+            ScannerTestSlice(r"'\X9'",      Token::Character),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice(r"'\@'",       Token::Character),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("'\\\u{0430}'", Token::Character),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice(r"'\m\'",      Token::Character),
+            ScannerTestSlice(" ",           Token::Whitespace),
+
+            // Attempts at line-continuation
+            ScannerTestSlice("'\\\n'",      Token::Character),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("'\\\r\n'",    Token::Character),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("'\\\r'",      Token::Character),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("'\\\n\t!!!'", Token::Character),
+        ], &[ Span::new( 1,  3), Span::new( 6,  8), Span::new(11, 13), Span::new(16, 18),
+              Span::new(21, 23), Span::new(26, 28), Span::new(25, 30), Span::new(32, 34),
+              Span::new(37, 40), Span::new(43, 45), Span::new(42, 47), Span::new(50, 50),
+              Span::new(55, 55), Span::new(61, 62), Span::new(60, 62), Span::new(66, 66),
+              Span::new(64, 72),
+        ], &[]);
+    }
 
     // TODO: type suffixes
 
