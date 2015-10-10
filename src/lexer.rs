@@ -387,7 +387,7 @@ impl<'a> StringScanner<'a> {
                 "Unexpected end of file while reading a block comment. \
                  Please look for the missing block comment closure */");
 
-            self.tok = Token::Comment;
+            self.tok = Token::Unrecognized;
         }
     }
 
@@ -893,21 +893,21 @@ mod tests {
     #[test]
     fn block_comment_unterminated_1() {
         check(&[
-            ScannerTestSlice("/* forgot", Token::Comment),
+            ScannerTestSlice("/* forgot", Token::Unrecognized),
         ], &[Span::new(0, 9)], &[]);
     }
 
     #[test]
     fn block_comment_unterminated_2() {
         check(&[
-            ScannerTestSlice("/*/", Token::Comment),
+            ScannerTestSlice("/*/", Token::Unrecognized),
         ], &[Span::new(0, 3)], &[]);
     }
 
     #[test]
     fn block_comment_unterminated_nested() {
         check(&[
-            ScannerTestSlice("/*/*nested*/", Token::Comment),
+            ScannerTestSlice("/*/*nested*/", Token::Unrecognized),
         ], &[Span::new(0, 12)], &[]);
     }
 
