@@ -22,6 +22,19 @@ by denoting token boundaries.
 > **A:** Because of the dominance of ASCII in the source code. Unicode strings
 > and identifiers are useful features. Supporting over a dozen varieties of
 > semantically insignificant characters is hardly a useful feature.
+>
+> **Q:** What about CR-only line endings?
+>
+> **A:** This line ending style is not currently in use by any major operating
+> system. As with Unicode whitespace, I would not like to support it 'just in
+> case'. Speaking of Unicode, the same is true for these fancy line separators
+> U+2028 and U+2029 which [do not actually fix anything][xkcd-927]. Support for
+> Windows line endings alone has kinda ugly effect on the scanning code. But!
+> Given that we already care about these characters at all, we _do_ detect and
+> report bare return characters as they are often caused by incorrect automated
+> processing of the source code.
+
+[xkcd-927]: https://xkcd.com/927
 
 
 ## 3 Comments
@@ -181,12 +194,22 @@ fractional parts:
 _No part_ can be omitted. One-half is written as `0.5`, not `.5`. Floating zero
 is written as `0.0`, not as `0.` or `.0`.
 
+> **Q:** Why is that so?
+>
+> **A:** Because ~I said so~ it avoids making arbitrary decisions about how
+> ambiguous strings like `1.foo` and `?.0` should be parsed in the presence
+> of used-defined operators. Plus, it simplifies scanning a bit: in cases like
+> `1.___4` the scanner is not required to use backtracking to correctly choose
+> between 'a float' and 'an integer, a dot, an identifer'. And yeah, finally,
+> because I hate when people 'shorten' floating-point literals by removing
+> 'unnecessary' zeros. They _are_ necessary! They act as a marker for floats.
+
 Exponential form is also available. It permits dropping the fractional part:
 
     1.0e10          2E-10
 
 Radix prefixes are not allowed for floating-point numbers. They are all written
-using decimal digits.
+using decimal digits. No binary form is provided for floating-point numbers.
 
 
 ### 7.3 Type suffixes
