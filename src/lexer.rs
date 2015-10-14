@@ -67,6 +67,9 @@ pub enum Token {
     /// A string of characters
     String,
 
+    /// A raw string of characters
+    RawString,
+
     /// Marker token denoting invalid character sequences
     Unrecognized,
 }
@@ -322,6 +325,16 @@ impl<'a> StringScanner<'a> {
             }
             '"' => {
                 self.scan_string();
+            }
+            'r' => {
+                match self.scan_raw_string_leaders() {
+                    Some(hashes) => {
+                        self.scan_raw_string(hashes);
+                    }
+                    None => {
+                        panic!("possibly invalid multipart identifier");
+                    }
+                }
             }
             _ => { panic!("unimplemented"); }
         }
@@ -936,6 +949,79 @@ impl<'a> StringScanner<'a> {
             self.report.error(Span::new(brace_start, brace_end),
                 "Incorrect Unicode scalar value. Expected only hex digits");
         }
+    }
+
+    /// Scan over raw string leading sequence `r#...#"`, stopping at the first non-leading
+    /// character. Returns Some number of hashes scanned over in case of success, or None
+    /// if the string did not look like a raw string leading sequence.
+    fn scan_raw_string_leaders(&mut self) -> Option<u32> {
+        assert!(self.cur == Some('r'));
+        self.read();
+
+        let mut hash_count = 0;
+        while !self.at_eof() {
+            match self.cur.unwrap() {
+                '#' => { hash_count += 1; }
+                '"' => { return Some(hash_count); }
+                 _  => { break; }
+            }
+            self.read();
+        }
+        return None;
+    }
+
+    /// Scan over a raw string delimited by `hash_count` hashes
+    fn scan_raw_string(&mut self, hash_count: u32) {
+        assert!(self.cur == Some('"'));
+        self.read();
+
+        loop {
+            match self.cur {
+                Some('"') => {
+                    if self.scan_raw_string_trailers(hash_count) {
+                        self.tok = Token::RawString;
+                        break;
+                    }
+                }
+                Some(c) => {
+                    if c == '\r' && self.peek() != Some('\n') {
+                        self.report.error(Span::new(self.prev_pos, self.pos),
+                            "Bare CR character");
+                    }
+                    self.read();
+                }
+                None => {
+                    self.report.error(Span::new(self.start, self.pos),
+                        "Unexpected EOF. Expected end of raw string");
+                    // TODO: output expected number of hashes
+                    self.tok = Token::Unrecognized;
+                    return;
+                }
+            }
+        }
+
+        // TODO: type suffix
+    }
+
+    /// Scan over raw string trailing sequence `"#...#`, stopping either at the first non-`#`
+    /// character, or at the end of file, or when `hash_count` hashes have been scanned over,
+    /// whichever comes first. Returns `true` when a correct trailing sequence was scanned.
+    fn scan_raw_string_trailers(&mut self, hash_count: u32) -> bool {
+        assert!(self.cur == Some('"'));
+        self.read();
+
+        let mut seen = 0;
+
+        while seen < hash_count {
+            if self.cur == Some('#') {
+                seen += 1;
+                self.read();
+            } else {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
 
@@ -1812,6 +1898,131 @@ mod tests {
     }
 
     // TODO: more tests
+
+    // TODO: type suffixes
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // Raw strings
+
+    #[test]
+    fn raw_string_basic() {
+        check(&[
+            ScannerTestSlice("r\"\"",              Token::RawString),
+            ScannerTestSlice(" ",                  Token::Whitespace),
+            ScannerTestSlice("r\"test\"",          Token::RawString),
+            ScannerTestSlice(" ",                  Token::Whitespace),
+            ScannerTestSlice("r\"h\\a\\-\\h\\a\"", Token::RawString),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn raw_string_unicode() {
+        check(&[
+            ScannerTestSlice("r\"\u{0442}\u{044D}\u{0441}\u{0442}\"",
+                                                   Token::RawString),
+            ScannerTestSlice(" ",                  Token::Whitespace),
+            ScannerTestSlice("r\"\u{D1F}\u{D46}\u{D38}\u{D4D}\u{D31}\u{D4D}\u{D31}\u{D4D}\"",
+                                                   Token::RawString),
+            ScannerTestSlice(" ",                  Token::Whitespace),
+            ScannerTestSlice("r\"\u{0074}\u{0068}\u{1EED}\"",
+                                                   Token::RawString),
+            ScannerTestSlice(" ",                  Token::Whitespace),
+            ScannerTestSlice("r\"\u{10E2}\u{10D4}\u{10E1}\u{10E2}\u{10D8}\"",
+                                                   Token::RawString),
+            ScannerTestSlice(" ",                  Token::Whitespace),
+            ScannerTestSlice("r\"\u{100100}\u{100200}\u{103000}\\\u{10FEEE}\u{FEFF}\"",
+                                                   Token::RawString),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn raw_string_hashed() {
+        check(&[
+            ScannerTestSlice("r\"#\"",             Token::RawString),
+            ScannerTestSlice(" ",                  Token::Whitespace),
+            ScannerTestSlice("r\"##\"",            Token::RawString),
+            ScannerTestSlice(" ",                  Token::Whitespace),
+            ScannerTestSlice("r#\"\"\"\"#",        Token::RawString),
+            ScannerTestSlice(" ",                  Token::Whitespace),
+            ScannerTestSlice("r##\"\"#\"\"##",     Token::RawString),
+            ScannerTestSlice(" ",                  Token::Whitespace),
+            ScannerTestSlice("r###################\"test\"###################", Token::RawString),
+            ScannerTestSlice(" ",                  Token::Whitespace),
+            ScannerTestSlice("r#\"<img src=\"some\test.jpg\"/>\"#", Token::RawString),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn raw_string_multiline() {
+        check(&[
+            ScannerTestSlice("r\"multi\nline\"",        Token::RawString),
+            ScannerTestSlice(",",                       Token::Comma),
+            ScannerTestSlice("r\"windows\r\nline\"",    Token::RawString),
+            ScannerTestSlice(",",                       Token::Comma),
+            ScannerTestSlice("r\"extra\n\n\npadding\"", Token::RawString),
+            ScannerTestSlice(",",                       Token::Comma),
+            ScannerTestSlice("r#\"\"\n\"\n\"#",         Token::RawString),
+            ScannerTestSlice(",",                       Token::Comma),
+            ScannerTestSlice("r##\"\r\n#\r\n\"##",      Token::RawString),
+            ScannerTestSlice(",",                       Token::Comma),
+            ScannerTestSlice("r\"line\\\nbreak\"",      Token::RawString), // These aren't escapes,
+            ScannerTestSlice(",",                       Token::Comma),     // just some slashes
+            ScannerTestSlice("r\"more\\\r\nbreak\"",    Token::RawString), // followed by a newline
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn raw_string_invalid_escape_sequences() {
+        check(&[
+            ScannerTestSlice("r\"\\\"",                 Token::RawString),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("r\"\\\u{1234}\"",         Token::RawString),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("r\"\\u{foo}\\u}{\\ufo\"", Token::RawString),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("r\"\\.\\9\\/\"",          Token::RawString),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("r\"\\xXx\"",              Token::RawString),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("r\"\\r\\#\\m\"",          Token::RawString),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn raw_string_premature_termination() {
+        check(&[ScannerTestSlice("r\"",               Token::Unrecognized)],
+              &[ Span::new(0, 2) ], &[]);
+        check(&[ScannerTestSlice("r\"some text",      Token::Unrecognized)],
+              &[ Span::new(0, 11) ], &[]);
+        check(&[ScannerTestSlice("r\"line\n",         Token::Unrecognized)],
+              &[ Span::new(0, 7) ], &[]);
+        check(&[ScannerTestSlice("r\"windows\r\n",    Token::Unrecognized)],
+              &[ Span::new(0, 11) ], &[]);
+        check(&[ScannerTestSlice("r\"bare CR\r",      Token::Unrecognized)],
+              &[ Span::new(9, 10), Span::new(0, 10) ], &[]);
+        check(&[ScannerTestSlice("r#\"text\"",        Token::Unrecognized)],
+              &[ Span::new(0, 8) ], &[]);
+        check(&[ScannerTestSlice("r###\"te\"#xt\"##", Token::Unrecognized)],
+              &[ Span::new(0, 14) ], &[]);
+        check(&[ScannerTestSlice("r#\"r\"\"",         Token::Unrecognized)],
+              &[ Span::new(0, 6) ], &[]);
+    }
+
+    #[test]
+    fn raw_string_bare_cr() {
+        check(&[
+            ScannerTestSlice("r\"te\rst\"",         Token::RawString),
+            ScannerTestSlice(" ",                   Token::Whitespace),
+            ScannerTestSlice("r\"test\\\r\"",       Token::RawString),
+            ScannerTestSlice(" ",                   Token::Whitespace),
+            ScannerTestSlice("r#\"bare\r\r\rCR\"#", Token::RawString),
+        ], &[ Span::new( 4,  5), Span::new(16, 17), Span::new(26, 27), Span::new(27, 28),
+              Span::new(28, 29) ], &[]);
+    }
+
+    // TODO: more tests?
+    //       Like, unrecognized starts of raw strings, "r#####foo"?
+    //       However, maybe these should be parsed as invalid multipart identifiers.
 
     // TODO: type suffixes
 
