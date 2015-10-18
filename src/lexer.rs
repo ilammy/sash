@@ -5,6 +5,7 @@
 // with the terms specified by this license.
 
 use std::mem;
+use std::char;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // Helper data structures
@@ -819,12 +820,17 @@ impl<'a> StringScanner<'a> {
         self.read();
 
         let mut digits = 0;
+        let mut value: u8 = 0;
+
         let digits_start = self.prev_pos;
         while !self.at_eof() {
             let c = self.cur.unwrap();
             if !StringScanner::is_digit(c, 16) {
                 break;
             }
+            // We don't care about overflows here as they can only be caused by
+            // reading more that two non-zero digits which is already an error.
+            value = value.wrapping_shl(4) | StringScanner::hex_value(c);
             digits += 1;
             self.read();
         }
@@ -833,59 +839,51 @@ impl<'a> StringScanner<'a> {
         if digits != 2 {
             self.report.error(Span::new(digits_start, digits_end),
                 "Expected two hexadecimal digits.");
+        } else {
+            if value > 0x7F {
+                self.report.error(Span::new(digits_start - 2, digits_end),
+                    "\\x?? escapes can only be used for ASCII values");
+            }
         }
     }
 
-    /// Scan over a single Unicode escape sequence
-    fn scan_escape_unicode(&mut self, context: CharacterContext) {
+    /// Scan over a single Unicode escape sequence. Returns None if we failed catastrophically and
+    /// the whole token may be deemed invalid. Otherwise returns Some character value represented
+    /// by the escape. The value is not guaranteed to be correct: U+FFFD REPLACEMENT CHARACTER is
+    /// silently returned if we failed to parse the escape.
+    fn scan_escape_unicode(&mut self, context: CharacterContext) -> Option<char> {
         assert!(self.cur == Some('u'));
         self.read();
 
+        const REPLACEMENT_CHARACTER: u32 = 0xFFFD;
+
         let brace_start = self.prev_pos;
 
-        match self.cur {
-            // All is well, a Unicode scalar starts with a '{'
+        // Unicode scalar value should be braced, so it must start with a '{'
+        let missing_open = match self.cur {
             Some('{') => {
                 self.read();
+                false
             }
-            // Stuff goes right away
-            _ => {
-                self.report.error(Span::new(self.prev_pos, self.prev_pos),
-                    "Unicode scalar value must start with '{'");
-
-                // We can go on with scanning in character literals, because this Unicode escape
-                // *should be* the only one thing in the token. Thus we can assume that whatever
-                // comes next is our sequence of hexadecimal digits (at least up to a terminating
-                // character like a closing quote, a slash, or a brace).
-                //
-                // However, this a too bold assumption for strings: we could never see a suitable
-                // terminating character (i.e., a brace, a slash, or a line ending), and we could
-                // call the whole remaining part of the string an 'invalid Unicode escape' which
-                // is not universally true. So we quit right now, after reporting a missing opening
-                // brace. The hex digits and the closing brace (if any) will be scanned over later
-                // as if they were regular characters of the string.
-                //
-                // TODO: be more concise
-                if context.of_string() {
-                    return;
-                }
-            }
-        }
+            _ => { true }
+        };
 
         let mut empty_braces = true;
         let mut invalid_hex = false;
         let mut missing_close = false;
+        let mut value: u32 = 0;
+        let mut unicode_overflow = false;
 
         loop {
             match self.cur {
-                // All is well, a Unicode scalar ends with a '}'
-                Some('}') => {
+                // If a Unicode scalar is braced then it ends with a '}'
+                Some('}') if !missing_open => {
                     self.read();
                     break;
                 }
                 // Unexpected end of file. Defer error reporting to the caller
                 None => {
-                    return;
+                    return None;
                 }
                 // Encountered clear terminator of a Unicode escape, but have not seen '}'
                 Some('\\') => {
@@ -905,7 +903,7 @@ impl<'a> StringScanner<'a> {
                 // it's just another implicit terminator of our Unicode-escapeв character.
                 Some('\n') => {
                     match context {
-                        OfCharacter => { return; }
+                        OfCharacter => { return None; }
                         OfString => {
                             missing_close = true;
                             break;
@@ -914,19 +912,44 @@ impl<'a> StringScanner<'a> {
                 }
                 Some('\r') if self.peek() == Some('\n') => {
                     match context {
-                        OfCharacter => { return; }
+                        OfCharacter => { return None; }
                         OfString => {
                             missing_close = true;
                             break;
                         }
                     }
                 }
-                // Otherwise, report anything that is not a hex digit and go on
-                Some(_) => {
-                    empty_braces = false;
-                    let c = self.cur.unwrap();
-                    if !StringScanner::is_digit(c, 16) {
+                // Otherwise, it may be a constituent hexadecimal digit, an invalid character,
+                // or another terminator, depending on whether we have seen an opening brace.
+                Some(c) => {
+                    let valid_digit = StringScanner::is_digit(c, 16);
+
+                    // Braced syntax of Unicode escapes allows adding support for named Unicode
+                    // characters in a backwards-compatible way. However, right now we do not have
+                    // them. So we just tweak error reporting a bit to be more reasonable.
+                    //
+                    // If we are scanning a properly braced escape we just skip everything that
+                    // does not look like a hex digit. Of course, we take notes of it and report
+                    // invalid characters. If we look at an (erroneous) old-skool "\uF0F0" escape,
+                    // we just stop at the first non-hex-digit assuming an end of the escape code.
+
+                    if !valid_digit {
+                        if missing_open {
+                            break;
+                        }
                         invalid_hex = true;
+                    }
+
+                    empty_braces = false;
+
+                    // Add hex digits to the codepoint value if possible. Take care to notice when
+                    // the value overflows the Unicode range and avoid further arithmetic overflow.
+
+                    if valid_digit && !invalid_hex && !unicode_overflow {
+                        value = (value << 4) | (StringScanner::hex_value(c) as u32);
+                        if value > 0x10FFFF {
+                            unicode_overflow = true;
+                        }
                     }
                 }
             }
@@ -935,20 +958,66 @@ impl<'a> StringScanner<'a> {
 
         let brace_end = self.prev_pos;
 
-        if missing_close {
-            self.report.error(Span::new(brace_end, brace_end),
-                "Unicode scalar value must end with '}'");
-        }
-
+        // Keep our mouth shut about missing/asymmetric braces if there is nothing in them anyway
         if empty_braces {
+            value = REPLACEMENT_CHARACTER;
             self.report.error(Span::new(brace_start, brace_end),
-                "Unicode scalar value is empty");
+                "Missing Unicode scalar value");
+        } else {
+            match (missing_open, missing_close) {
+                (true, false) => {
+                    self.report.error(Span::new(brace_start, brace_start),
+                        "Unicode scalar value must start with '{'");
+                }
+                (false, true) => {
+                    self.report.error(Span::new(brace_end, brace_end),
+                        "Unicode scalar value must end with '}'");
+                }
+                (true, true) => {
+                    self.report.error(Span::new(brace_start, brace_end),
+                        "Unicode scalar value must be surrounded with '{' '}'"); // TODO: message
+                }
+                (false, false) => { }
+            }
         }
 
         if invalid_hex {
+            value = REPLACEMENT_CHARACTER;
             self.report.error(Span::new(brace_start, brace_end),
                 "Incorrect Unicode scalar value. Expected only hex digits");
         }
+
+        if unicode_overflow {
+            value = REPLACEMENT_CHARACTER;
+            self.report.error(Span::new(brace_start - 2, brace_end),
+                "Incorrect Unicode scalar value. Out of range, too big"); // TODO: messages
+        }
+
+        if (0xD800 <= value) && (value <= 0xDFFF) {
+            value = REPLACEMENT_CHARACTER;
+            self.report.error(Span::new(brace_start - 2, brace_end),
+                "Incorrect Unicode scalar value. Surrogate"); // TODO: messages
+        }
+
+        // At this point we have ensured that `value` *is* a valid Unicode scalar value
+        assert!((value <= 0x10FFFF) && !((0xD800 <= value) && (value <= 0xDFFF)));
+
+        // TODO: Replace this with std::char::from_u32_unchecked() when it is stabilized
+        return Some(char::from_u32(value).unwrap());
+    }
+
+    /// Convert an ASCII hex digit character to its numeric value
+    fn hex_value(c: char) -> u8 {
+        assert!(StringScanner::is_digit(c, 16));
+
+        const H: &'static [u8; 128] = &[
+            0, 0, 0, 0, 0, 0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+            0, 0, 0, 0, 0, 0, 0,0,0,0,0,0,0,0,0,0,0,1,2,3,4,5,6,7,8,9,0,0,0,0,0,0,
+            0,10,11,12,13,14,15,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+            0,10,11,12,13,14,15,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        ];
+
+        return H[c as usize];
     }
 
     /// Scan over raw string leading sequence `r#...#"`, stopping at the first non-leading
@@ -1522,26 +1591,39 @@ mod tests {
         check(&[
             ScannerTestSlice(r"'\x00'",         Token::Character),
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\x35'",         Token::Character),  // The scanner does not really
-            ScannerTestSlice(r" ",              Token::Whitespace), // care about contents. It only
-            ScannerTestSlice(r"'\x1f'",         Token::Character),  // checks that a literal has
-            ScannerTestSlice(r" ",              Token::Whitespace), // expected number of digits.
-            ScannerTestSlice(r"'\xFF'",         Token::Character),
+            ScannerTestSlice(r"'\x35'",         Token::Character),
+            ScannerTestSlice(r" ",              Token::Whitespace),
+            ScannerTestSlice(r"'\x1f'",         Token::Character),
+            ScannerTestSlice(r" ",              Token::Whitespace),
+            ScannerTestSlice(r"'\xFF'",         Token::Character),  // \x?? escapes are ASCII-only
             ScannerTestSlice(r" ",              Token::Whitespace),
             ScannerTestSlice(r"'\u{12}'",       Token::Character),
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\u{DEAD}'",     Token::Character),  // It also does not care about
-            ScannerTestSlice(r" ",              Token::Whitespace), // Unicode surrogates...
+            ScannerTestSlice(r"'\u{d799}'",     Token::Character),
+            ScannerTestSlice(r" ",              Token::Whitespace),
+            ScannerTestSlice(r"'\u{D800}'",     Token::Character),  // Surrogates are not valid
+            ScannerTestSlice(r" ",              Token::Whitespace),
+            ScannerTestSlice(r"'\u{DEAD}'",     Token::Character),  // All of them
+            ScannerTestSlice(r" ",              Token::Whitespace),
+            ScannerTestSlice(r"'\u{DFfF}'",     Token::Character),  // are not valid
+            ScannerTestSlice(r" ",              Token::Whitespace),
+            ScannerTestSlice(r"'\u{e000}'",     Token::Character),
+            ScannerTestSlice(r" ",              Token::Whitespace),
+            ScannerTestSlice(r"'\u{FFFE}'",     Token::Character),  // Non-characters are okay
+            ScannerTestSlice(r" ",              Token::Whitespace),
             ScannerTestSlice(r"'\u{fffff}'",    Token::Character),
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\u{99999999}'", Token::Character),  // or any Unicode range at all.
+            ScannerTestSlice(r"'\u{F0123}'",    Token::Character),  // Private use area is okay
             ScannerTestSlice(r" ",              Token::Whitespace),
             ScannerTestSlice(r"'\u{0}'",        Token::Character),
             ScannerTestSlice(r" ",              Token::Whitespace),
             ScannerTestSlice(r"'\u{00000005}'", Token::Character),
-            ScannerTestSlice(r" ",              Token::Whitespace), // Really.
+            ScannerTestSlice(r" ",              Token::Whitespace),
+            ScannerTestSlice(r"'\u{99999999}'", Token::Character),  // Out of range are not okay
+            ScannerTestSlice(r" ",              Token::Whitespace), // but they are still scanned
             ScannerTestSlice(r"'\u{f0f0f0deadbeef00012345}'", Token::Character),
-        ], &[], &[]);
+        ], &[ Span::new( 22 , 26), Span::new( 49 , 57), Span::new(60, 68), Span::new(71, 79),
+              Span::new(151, 163), Span::new(166, 192) ], &[]);
     }
 
     // We adopt a simple heuristic for the case of missing closing quotes in character literals.
@@ -1595,8 +1677,7 @@ mod tests {
                                                                        Span::new(0, 3) ], &[]);
         check(&[ ScannerTestSlice("'\\y",   Token::Unrecognized) ], &[ Span::new(1, 3),
                                                                        Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("'\\u",   Token::Unrecognized) ], &[ Span::new(3, 3),
-                                                                       Span::new(0, 3) ], &[]);
+        check(&[ ScannerTestSlice("'\\u",   Token::Unrecognized) ], &[ Span::new(0, 3) ], &[]);
         check(&[ ScannerTestSlice("'\\u{",  Token::Unrecognized) ], &[ Span::new(0, 4) ], &[]);
         check(&[ ScannerTestSlice("'\\u{}", Token::Unrecognized) ], &[ Span::new(3, 5),
                                                                        Span::new(0, 5) ], &[]);
@@ -1660,9 +1741,9 @@ mod tests {
             ScannerTestSlice(r"'\u{123, missing",       Token::Unrecognized),
             ScannerTestSlice("\n",                      Token::Whitespace),
             ScannerTestSlice(r"'\u{more missing",       Token::Unrecognized),
-        ], &[ Span::new( 7,  7), Span::new(13, 13), Span::new(12, 13), Span::new(18, 24),
-              Span::new(34, 34), Span::new(29, 34), Span::new(39, 57), Span::new(79, 79),
-              Span::new(62, 79), Span::new(81, 97), Span::new(98, 114) ], &[]);
+        ], &[ Span::new( 7,  7), Span::new(12, 13), Span::new(18, 24), Span::new(34, 34),
+              Span::new(29, 34), Span::new(39, 57), Span::new(79, 79), Span::new(62, 79),
+              Span::new(81, 97), Span::new(98, 114) ], &[]);
     }
 
     #[test]
@@ -1675,10 +1756,29 @@ mod tests {
             ScannerTestSlice(r"'\uguu~'",   Token::Character),
             ScannerTestSlice(" ",           Token::Whitespace),
             ScannerTestSlice(r"'\ux\uy'",   Token::Character),
-        ], &[ Span::new( 3,  3), Span::new( 3,  3), Span::new( 3,  3), Span::new( 8,  8),
-              Span::new( 8,  9), Span::new(14, 14), Span::new(18, 18), Span::new(14, 18),
-              Span::new(23, 23), Span::new(24, 24), Span::new(23, 24), Span::new(26, 26),
-              Span::new(27, 27), Span::new(26, 27), Span::new(20, 28)
+        ], &[ Span::new( 3,  3), Span::new( 8,  8), Span::new( 5, 10), Span::new(14, 14),
+              Span::new(11, 19), Span::new(23, 23), Span::new(26, 26), Span::new(20, 28),
+        ], &[]);
+    }
+
+    #[test]
+    fn character_unicode_bare_digits() {
+        check(&[
+            ScannerTestSlice(r"'\u0000'",       Token::Character),
+            ScannerTestSlice(" ",               Token::Whitespace),
+            ScannerTestSlice(r"'\u9'",          Token::Character),
+            ScannerTestSlice(" ",               Token::Whitespace),
+            ScannerTestSlice(r"'\uDEAD'",       Token::Character),
+            ScannerTestSlice(" ",               Token::Whitespace),
+            ScannerTestSlice(r"'\u10F0F0'",     Token::Character),
+            ScannerTestSlice(" ",               Token::Whitespace),
+            ScannerTestSlice(r"'\u9999999999'", Token::Character),
+            ScannerTestSlice(" ",               Token::Whitespace),
+            ScannerTestSlice(r"'\u1\u2'",       Token::Character),
+            ScannerTestSlice(" ",               Token::Whitespace),
+        ], &[ Span::new( 3,  7), Span::new(12, 13), Span::new(18, 22), Span::new(16, 22),
+              Span::new(27, 33), Span::new(38, 48), Span::new(36, 48), Span::new(53, 54),
+              Span::new(56, 57), Span::new(50, 58),
         ], &[]);
     }
 
@@ -1777,10 +1877,11 @@ mod tests {
             ScannerTestSlice(r#""\x00\x3D\x70 \x50\x6E""#,   Token::String),
             // ...and Unicode escapes...
             ScannerTestSlice(r#""\u{3} \u{12F1E}\u{F0F0}""#, Token::String),
-            // ...and, as with characters, do not care about their semantics.
+            // ...and, as with characters, somewhat care about their semantics.
             ScannerTestSlice(r#""\xFF\xFE\x00\xDE\xAD""#,    Token::String),
             ScannerTestSlice(r#""\u{D900}\u{F0F0F090909}""#, Token::String),
-        ], &[], &[]);
+        ], &[ Span::new(49, 53), Span::new(53, 57), Span::new(61, 65), Span::new(65, 69),
+              Span::new(71, 79), Span::new(79, 94) ], &[]);
     }
 
     #[test]
@@ -1814,8 +1915,7 @@ mod tests {
                                                                         Span::new(0, 3) ], &[]);
         check(&[ ScannerTestSlice("\"\\y",   Token::Unrecognized) ], &[ Span::new(1, 3),
                                                                         Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("\"\\u",   Token::Unrecognized) ], &[ Span::new(3, 3),
-                                                                        Span::new(0, 3) ], &[]);
+        check(&[ ScannerTestSlice("\"\\u",   Token::Unrecognized) ], &[ Span::new(0, 3) ], &[]);
         check(&[ ScannerTestSlice("\"\\u{",  Token::Unrecognized) ], &[ Span::new(0, 4) ], &[]);
         check(&[ ScannerTestSlice("\"\\u{}", Token::Unrecognized) ], &[ Span::new(3, 5),
                                                                         Span::new(0, 5) ], &[]);
@@ -1862,12 +1962,12 @@ mod tests {
             ScannerTestSlice("\"\\u{or this\\f\"",                          Token::String),
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
             ScannerTestSlice(r#""\u{check missing"#,                        Token::Unrecognized),
-        ], &[ Span::new(  7,   7), Span::new( 13,  13), Span::new( 12,  13), Span::new( 18,  24),
-              Span::new( 34,  34), Span::new( 29,  34), Span::new( 39,  57), Span::new( 79,  79),
-              Span::new( 62,  79), Span::new( 97,  97), Span::new( 84,  97), Span::new(137, 137),
-              Span::new(124, 137), Span::new(158, 184), Span::new(199, 199), Span::new(189, 199),
-              Span::new(222, 222), Span::new(212, 222), Span::new(242, 242), Span::new(234, 242),
-              Span::new(242, 244), Span::new(246, 263),
+        ], &[ Span::new(  7,   7), Span::new( 12,  13), Span::new( 18,  24), Span::new( 34,  34),
+              Span::new( 29,  34), Span::new( 39,  57), Span::new( 79,  79), Span::new( 62,  79),
+              Span::new( 97,  97), Span::new( 84,  97), Span::new(137, 137), Span::new(124, 137),
+              Span::new(158, 184), Span::new(199, 199), Span::new(189, 199), Span::new(222, 222),
+              Span::new(212, 222), Span::new(242, 242), Span::new(234, 242), Span::new(242, 244),
+              Span::new(246, 263),
         ], &[]);
     }
 
@@ -1883,6 +1983,16 @@ mod tests {
             ScannerTestSlice(r#""\ux\uy""#,   Token::String),
         ], &[ Span::new(3, 3), Span::new(8, 8), Span::new(14, 14), Span::new(23, 23),
               Span::new(26, 26) ], &[]);
+    }
+
+    #[test]
+    fn string_unicode_bare_digits() {
+        check(&[
+            ScannerTestSlice(r#""\u0000\u9\uDEAD\u101111\u99999999999\u1}\u""#, Token::String),
+        ], &[ Span::new( 3,  7), Span::new( 9, 10), Span::new(12, 16), Span::new(10, 16),
+              Span::new(18, 24), Span::new(26, 37), Span::new(24, 37), Span::new(39, 39),
+              Span::new(43, 43),
+        ], &[]);
     }
 
     #[test]
