@@ -199,31 +199,31 @@ impl<'a> Scanner<'a> for StringScanner<'a> {
     }
 }
 
-/// Character scanning context
-///
-/// Denotes the context in which a character or an escape sequence is scanned. It is primarily used
-/// by error recovery code paths. However, there are several characters the meaning of which can be
-/// context-dependent, e.g., the backslash `\` character.
-enum CharacterContext {
-    OfCharacter,
-    OfString,
+/// Indicator values used in scanning character literals. These are returned by
+/// `StringScanner::scan_one_character_of_character()` when the next character
+/// is not a regular character of a literal.
+enum CharacterSpecials {
+    /// Literal single quote encountered. It has not been scanned over yet.
+    SingleQuote,
+
+    /// Unexpected terminator (a line ending or the end of stream) encountered.
+    /// The line ending has not been scanned over yet.
+    UnexpectedTerminator,
 }
 
-use self::CharacterContext::*;
+/// Indicator values used in scanning string literals. These are returned by
+/// `StringScanner::scan_one_character_of_string()` when the next character
+/// is not a regular character of a literal.
+enum StringSpecials {
+    /// Literal double quote encountered. It has not been scanned over yet.
+    DoubleQuote,
 
-impl CharacterContext {
-    // Method calls just read better. Compare `context.of_string()` with `context == OfString`
-    // as well as `!context.of_string()` with `context != OfString`
+    /// A backslash-escaped line ending has been skipped over, yielding no
+    /// characters for the string.
+    SkippedEscapedLineEnding,
 
-    /// Check whether this is `CharacterContext::OfCharacter`
-    fn of_character(&self) -> bool {
-        match *self { OfCharacter => true, _ => false }
-    }
-
-    /// Check whether this is `CharacterContext::OfString`
-    fn of_string(&self) -> bool {
-        match *self { OfString => true, _ => false }
-    }
+    /// Unexpected terminator (the end of stream) encountered.
+    UnexpectedTerminator,
 }
 
 impl<'a> StringScanner<'a> {
@@ -599,223 +599,328 @@ impl<'a> StringScanner<'a> {
 
     /// Scan over a single character literal
     fn scan_character_literal(&mut self) {
+        use self::CharacterSpecials::*;
+
         // A character literal is a single quote...
         assert!(self.cur == Some('\''));
         self.read();
-        let init = self.cur;
 
-        // ...followed by one character...
-        if !self.at_eof() {
-            self.scan_one_character_or_escape_sequence(OfCharacter);
-        }
-
-        match self.cur {
-            // ... and then by another single quote. All's fine here.
-            Some('\'') => {
+        let terminated = match self.scan_one_character_of_character() {
+            // ...followed by one character...
+            Ok(_) => {
+                match self.scan_one_character_of_character() {
+                    // ...and then by another single quote.
+                    Err(SingleQuote) => {
+                        self.read();
+                        true
+                    }
+                    // If that's not a quote, pretend that we are scanning over a string, assuming
+                    // that this is a one-line string mistakingly delimited by single quotes. But
+                    // if it's not one-line then maybe this is not a character literal at all, the
+                    // first quote character was lie, and we have scanned over something valuable.
+                    // The same logic applies to all following uses of `UnexpectedTerminator`.
+                    Ok(_) => {
+                        let mut terminated = true;
+                        loop {
+                            // We are scanning characters as character literal characters in order
+                            // to treat line endings as terminators, not as constituents.
+                            match self.scan_one_character_of_character() {
+                                // Skip over any constituents
+                                Ok(_) => { }
+                                // We have seen a closing quote on the same line, stop scanning
+                                Err(SingleQuote) => {
+                                    self.read();
+                                    self.report.error(Span::new(self.start, self.prev_pos),
+                                        "A character literal must contain only one character");
+                                    break;
+                                }
+                                // We did not see a closing quote on the same line, abort scanning
+                                Err(UnexpectedTerminator) => {
+                                    terminated = false;
+                                    break;
+                                }
+                            }
+                        }
+                        terminated
+                    }
+                    Err(UnexpectedTerminator) => { false }
+                }
+            }
+            // A literal single quote may be immediately followed by another literal single quote
+            // in two cases: ''' (a correct character literal) and '' (incorrect empty character).
+            Err(SingleQuote) => {
                 self.read();
-                self.tok = Token::Character;
-            }
-            // The file ended prematurely
-            None => {
-                self.report.error(Span::new(self.start, self.prev_pos),
-                    "Unexpected end of file. Expected character literal.");
-                self.tok = Token::Unrecognized;
-            }
-            // There is no terminating quote. Okay, go on scanning presuming that the user
-            // meant to type a short string literal but used single quotes for some reason.
-            _ => {
-                // Special case: ''
-                if init == Some('\'') {
+                if self.cur == Some('\'') {
+                    self.read();
+                } else {
                     self.report.error(Span::new(self.start, self.prev_pos),
                         "A character literal must contain a character");
-                    self.tok = Token::Character;
-                    return;
                 }
-
-                let presumed_end = self.prev_pos;
-
-                while !self.at_eof() {
-                    match self.cur.unwrap() {
-                        '\r' if self.peek() == Some('\n') => {
-                            break;
-                        }
-                        '\n' | '\'' => { break; }
-                         _          => { self.scan_one_character_or_escape_sequence(OfCharacter); }
-                    }
-                }
-
-                match self.cur {
-                    // We have found a closing quote on the same line
-                    Some('\'') => {
-                        self.read();
-                        self.report.error(Span::new(self.start, self.prev_pos),
-                            "A character literal must contain only one character");
-                        self.tok = Token::Character;
-                    }
-                    // There were no quotes on this line, maybe the first one was an error
-                    Some('\r') | Some('\n') => {
-                        self.report.error(Span::new(self.start, presumed_end),
-                            "Missing closing quote (').");
-                        self.tok = Token::Unrecognized;
-                    }
-                    // The file ended prematurely
-                    None => {
-                        self.report.error(Span::new(self.start, presumed_end),
-                            "Unexpected end of file. Expected a closing single quote.");
-                        self.tok = Token::Unrecognized;
-                    }
-                    Some(_) => { unreachable!(); } // due to the loop above
-                }
+                true
             }
+            Err(UnexpectedTerminator) => { false }
+        };
+
+        if !terminated {
+            self.report.error(Span::new(self.start, self.prev_pos),
+                    "Missing closing single quote.");
+            self.tok = Token::Unrecognized;
+            return;
         }
+
         // TODO: type suffix
+
+        self.tok = Token::Character;
     }
 
     /// Scan over a string literal
     fn scan_string(&mut self) {
+        use self::StringSpecials::*;
+
         // Strings start with a double quote...
         assert!(self.cur == Some('"'));
         self.read();
 
         loop {
-            match self.cur {
-                // ...and go on until another double quote is encountered.
-                Some('"') => {
+            match self.scan_one_character_of_string() {
+                // ...then it contains some characters...
+                Ok(_) => {
+                    // (which we currently ignore)
+                }
+                // ...or escaped line endings, which are ignored...
+                Err(SkippedEscapedLineEnding) => { }
+                // ...and finally the string ends with a closing double quote.
+                Err(DoubleQuote) => {
                     self.read();
-                    self.tok = Token::String;
                     break;
                 }
-                // Between the double quotes there are characters and escape sequences.
-                Some(_) => {
-                    self.scan_one_character_or_escape_sequence(OfString);
-                }
-                // It is bad when the scanner encounters the end of file when scanning a string.
-                // As strings can contain _arbitrary sequences of characters_, the only thing that
-                // we are sure in is the double quote. It certainly means the end of string.
-                // Everything else can be (possibly incorrect) string content. That's why error
-                // recovery is not great when a closing quote goes missing. We just hope that it
-                // results into lots of nonsensical tokens which will make the parser to give up.
-                None => {
+                // But things go wrong sometimes and the string may not be terminated
+                Err(UnexpectedTerminator) => {
+                    // For strings there is only one way to get here: end of the stream
                     self.report.error(Span::new(self.start, self.pos),
-                        "Unexpected end of file. Expected end of string.");
+                        "Missing closing double quote.");
                     self.tok = Token::Unrecognized;
                     return;
                 }
             }
         }
+
         // TODO: type suffix
+
+        self.tok = Token::String;
     }
 
-    /// Scan over a single character or escape sequence in character or string literal
-    fn scan_one_character_or_escape_sequence(&mut self, context: CharacterContext) {
-        assert!(self.cur.is_some());
-
-        match self.cur.unwrap() {
-            // Escape sequences start with a backslash.
-            // But it also may be a singular backslash in character literals.
-            '\\' => {
-                let p = self.peek();
-                if p.is_none() {
-                    // Either way, we cannot do much in this case.
-                    // Unexpected EOF will be reported by the caller.
-                    self.read();
-                    return;
-                }
-                match context {
-                    OfCharacter => {
-                        if p == Some('\'') {
-                            self.read();
-                        } else {
-                            self.scan_escape_sequence(OfCharacter);
-                        }
-                    }
-                    OfString => {
-                        self.scan_escape_sequence(OfString);
-                    }
-                }
+    /// Scan over a single character or escape sequence for a character literal. Returns an Ok
+    /// character if it was scanned successfully, or a special indicator value if there was no
+    /// character to scan. Note that there is a difference between 'successfully scanned over
+    /// a character or an escape sequence' and 'scanned over a correct and valid character token'.
+    fn scan_one_character_of_character(&mut self) -> Result<char, CharacterSpecials> {
+        use self::CharacterSpecials::*;
+        match self.cur {
+            // Backslash is a marker of escape sequences
+            Some('\\') => {
+                return self.scan_character_escape_sequence();
             }
-            // When scanning a character, stop at line ending. It will be handled by the caller
-            '\n' => {
-                if !context.of_character() {
-                    self.read();
-                }
+            // Character literals cannot contain multiple characters in them, and cannot contain
+            // explicit line endings (not even a single one). We tolerate and recover from multiple
+            // characters on the same line as this may happen accidentally (e.g., denormalized
+            // composite Unicode), but anything mulitline is an instant parsing failure. The users
+            // must fix their code in the case as the scanner cannot and must not guess where their
+            // intended string actually ends.
+            Some('\n') => {
+                return Err(UnexpectedTerminator);
             }
-            '\r' if self.peek() == Some('\n') => {
-                if !context.of_character() {
-                    self.read();
-                    self.read();
-                }
+            Some('\r') if self.peek() == Some('\n') => {
+                return Err(UnexpectedTerminator);
+            }
+            // Characters are correctly terminated by a single quote character. But they may also
+            // contain it, as in ''' or '\u{27}'. Obviously, we need to discern between a literal
+            // quote (which may be a terminator) and its Unicode escape form (which is never one).
+            Some('\'') => {
+                return Err(SingleQuote);
             }
             // Everything else is just a single character
-            _ => {
-                // Bare CR characters are prohibited in Sash as they are often results of VCS
+            Some(c) => {
+                // Drop a warning about a bare CR character. It is *not considered* a line ending,
+                // but must be escaped in characters. These characters are often results of VCS
                 // misconfiguration or other kind of blind automated tampering with source file
-                // contents. None of the popular operating systems uses bare CRs as a line ending
-                // marker, and Sash does not recognize them as such.
-                if self.cur.unwrap() == '\r' {
+                // contents. None of the popular operating systems uses bare CRs as line endings.
+                if c == '\r' {
                     self.report.error(Span::new(self.prev_pos, self.pos),
                         "Bare CR characters must be escaped");
                 }
                 self.read();
+                return Ok(c);
+            }
+            // We expected at least one character or a closing quote
+            None => {
+                return Err(UnexpectedTerminator);
             }
         }
     }
 
-    /// Scan over a single escape sequence
-    fn scan_escape_sequence(&mut self, context: CharacterContext) {
-        assert!(self.cur == Some('\\') && self.peek().is_some());
+    /// Scan over a single character or escape sequence for a string literal. Returns an Ok
+    /// character if it was scanned successfully, or a special indicator value if there was no
+    /// character to scan. Note that there is a difference between 'successfully scanned over
+    /// a character or an escape sequence' and 'scanned over a correct and valid string token'.
+    fn scan_one_character_of_string(&mut self) -> Result<char, StringSpecials> {
+        use self::StringSpecials::*;
+        match self.cur {
+            // Backslash is a marker of escape sequences
+            Some('\\') => {
+                return self.scan_string_escape_sequence();
+            }
+            // String literals may contain multiple lines. The only special thing about them
+            // is that Windows line endings are normalized into UNIX ones.
+            Some('\n') => {
+                self.read();
+                return Ok('\n');
+            }
+            Some('\r') if self.peek() == Some('\n') => {
+                self.read(); // TODO: this may cause issues if read() is taught to skip over
+                self.read(); //       Windows line endings as a single character
+                return Ok('\n');
+            }
+            // Strings are correctly terminated by a double quote character. But they may also
+            // contain it, as in "\"" or "\u{27}". Obviously, we need to discern between a literal
+            // quote (which may be a terminator) and its Unicode escape form (which is never one).
+            Some('"') => {
+                return Err(DoubleQuote);
+            }
+            // Everything else is just a single character
+            Some(c) => {
+                // Drop a warning about a bare CR character. It is *not considered* a line ending,
+                // but must be escaped in characters. These characters are often results of VCS
+                // misconfiguration or other kind of blind automated tampering with source file
+                // contents. None of the popular operating systems uses bare CRs as line endings.
+                if c == '\r' {
+                    self.report.error(Span::new(self.prev_pos, self.pos),
+                        "Bare CR characters must be escaped");
+                }
+                self.read();
+                return Ok(c);
+            }
+            // We expected at least one character or a closing quote
+            None => {
+                return Err(UnexpectedTerminator);
+            }
+        }
+    }
+
+    /// Scan over an escape sequence allowed in character literals. Returns an Ok value denoted
+    /// by the sequence (which is not guaranteed to be accurate), or a special indicator value.
+    fn scan_character_escape_sequence(&mut self) -> Result<char, CharacterSpecials> {
+        // All escape sequences start with a backslash
+        assert!(self.cur == Some('\\'));
         self.read();
 
-        match self.cur.unwrap() {
-            '0' | 't' | 'n' | 'r' | '"' | '\\' => { self.read(); }
-            'x' => { self.scan_escape_byte(); }
-            'u' => { self.scan_escape_unicode(context); }
-            _ => {
-                match self.cur.unwrap() {
-                    '\n' => {
-                        let start = self.prev_pos;
-                        self.read();
-                        match context {
-                            OfCharacter => {
-                                self.report.error(Span::new(start, start),
-                                    "Line continuations cannot be used in character literals");
-                            }
-                            OfString => {
-                                self.scan_whitespace();
-                            }
-                        }
-                    }
-                    '\r' if self.peek() == Some('\n') => {
-                        let start = self.prev_pos;
-                        self.read();
-                        self.read();
-                        match context {
-                            OfCharacter => {
-                                self.report.error(Span::new(start, start),
-                                    "Line continuations cannot be used in character literals");
-                            }
-                            OfString => {
-                                self.scan_whitespace();
-                            }
-                        }
-                    }
-                    _ => {
-                        if self.cur.unwrap() == '\r' {
-                            self.report.error(Span::new(self.prev_pos, self.pos),
-                                "Bare CR character");
-                        }
-                        let start = self.prev_pos - 1;
-                        self.read();
-                        self.report.error(Span::new(start, self.prev_pos),
-                            "Unknown escape sequence");
-                    }
+        match self.cur {
+            // \u... is a universal marker of a Unicode escape
+            Some('u') => {
+                return Ok(self.scan_escape_unicode(Some('\'')));
+            }
+
+            // C-style escape sequences and ASCII byte escapes
+            Some('0')  => { self.read(); return Ok('\0'); }
+            Some('t')  => { self.read(); return Ok('\t'); }
+            Some('n')  => { self.read(); return Ok('\n'); }
+            Some('r')  => { self.read(); return Ok('\r'); }
+            Some('"')  => { self.read(); return Ok('\"'); }
+            Some('\\') => { self.read(); return Ok('\\'); }
+            Some('x')  => { return Ok(self.scan_escape_byte()); }
+
+            // A backslash denotes itself when it is followed by a terminator of a character
+            // literal. The single quote will be scanned over by the caller, line endings and
+            // the end of stream will also be handled by the caller. Here we just scan over
+            // the backslash we are going to return.
+            Some('\n') | Some('\'') | None => {
+                return Ok('\\');
+            }
+            Some('\r') if self.peek() == Some('\n') => {
+                return Ok('\\');
+            }
+
+            // Everything else is not expected to follow a backslash a means some invalid
+            // escape sequence. Return that character as the value of the escape sequence.
+            Some(c) => {
+                // Report bare CRs just in case the user meant to follow the backslash with
+                // a line ending, but has a crappy text editor. They will be included intact
+                // into the character or the string being scanned.
+                if c == '\r' {
+                    self.report.error(Span::new(self.prev_pos, self.pos),
+                        "Bare CR character");
                 }
+                self.report.error(Span::new(self.prev_pos - 1, self.pos),
+                    "Unknown escape sequence");
+                self.read();
+                return Ok(c);
             }
         }
     }
 
-    /// Scan over a single byte escape sequence
-    fn scan_escape_byte(&mut self) {
+    /// Scan over an escape sequence allowed in string literals. Returns an Ok value denoted
+    /// by the sequence (which is not guaranteed to be accurate), or a special indicator value.
+    fn scan_string_escape_sequence(&mut self) -> Result<char, StringSpecials> {
+        use self::StringSpecials::*;
+
+        // All escape sequences start with a backslash
+        assert!(self.cur == Some('\\'));
+        self.read();
+
+        match self.cur {
+            // \u... is a universal marker of a Unicode escape
+            Some('u') => {
+                return Ok(self.scan_escape_unicode(Some('"')));
+            }
+
+            // C-style escape sequences and ASCII byte escapes
+            Some('0')  => { self.read(); return Ok('\0'); }
+            Some('t')  => { self.read(); return Ok('\t'); }
+            Some('n')  => { self.read(); return Ok('\n'); }
+            Some('r')  => { self.read(); return Ok('\r'); }
+            Some('"')  => { self.read(); return Ok('\"'); }
+            Some('\\') => { self.read(); return Ok('\\'); }
+            Some('x')  => { return Ok(self.scan_escape_byte()); }
+
+            // A backslash followed by a line ending is an escaped line ending. We scan over the
+            // backslash, the line ending, and any additional whitespace following it, and then
+            // go back to the caller.
+            Some('\n') => {
+                self.scan_whitespace();
+                return Err(SkippedEscapedLineEnding);
+            }
+            Some('\r') if self.peek() == Some('\n') => {
+                self.scan_whitespace();
+                return Err(SkippedEscapedLineEnding);
+            }
+
+            // Everything else is not expected to follow a backslash a means some invalid
+            // escape sequence. Return that character as the value of the escape sequence.
+            Some(c) => {
+                // Report bare CRs just in case the user meant to follow the backslash with
+                // a line ending, but has a crappy text editor. They will be included intact
+                // into the character or the string being scanned.
+                if c == '\r' {
+                    self.report.error(Span::new(self.prev_pos, self.pos),
+                        "Bare CR character");
+                }
+                self.report.error(Span::new(self.prev_pos - 1, self.pos),
+                    "Unknown escape sequence");
+                self.read();
+                return Ok(c);
+            }
+
+            // Ugh, an end of stream right after a backslash. We are scanning a string,
+            // backslashes must be always escaped here (this is optional in characters).
+            // Immediately notify the caller that a closing double quote will never arrive.
+            None => {
+                return Err(UnexpectedTerminator);
+            }
+        }
+    }
+
+    /// Scan over a single byte escape sequence. Returns its value.
+    fn scan_escape_byte(&mut self) -> char {
         assert!(self.cur == Some('x'));
         self.read();
 
@@ -845,13 +950,15 @@ impl<'a> StringScanner<'a> {
                     "\\x?? escapes can only be used for ASCII values");
             }
         }
+
+        // The value may be incorrect, but this method is used only in character and string
+        // contexts where we do not really care about this (from the lexical standpoint)
+        return value as char;
     }
 
-    /// Scan over a single Unicode escape sequence. Returns None if we failed catastrophically and
-    /// the whole token may be deemed invalid. Otherwise returns Some character value represented
-    /// by the escape. The value is not guaranteed to be correct: U+FFFD REPLACEMENT CHARACTER is
-    /// silently returned if we failed to parse the escape.
-    fn scan_escape_unicode(&mut self, context: CharacterContext) -> Option<char> {
+    /// Scan over a single Unicode escape sequence. Returns the value of the escape sequence,
+    /// or U+FFFD REPLACEMENT CHARACTER if the sequence was legible but otherwise incorrect.
+    fn scan_escape_unicode(&mut self, extra_delimiter: Option<char>) -> char {
         assert!(self.cur == Some('u'));
         self.read();
 
@@ -881,43 +988,26 @@ impl<'a> StringScanner<'a> {
                     self.read();
                     break;
                 }
-                // Unexpected end of file. Defer error reporting to the caller
-                None => {
-                    return None;
-                }
-                // Encountered clear terminator of a Unicode escape, but have not seen '}'
-                Some('\\') => {
+                // Encountered a clear terminator of a Unicode escape, but have not seen '}'.
+                // Terminators include a backslash (likely to start the next escape sequence),
+                // the end of stream (obvioulsy), a line ending (likely to mean a forgotten brace),
+                // and a caller-provided additional character (if any, this will be a single or
+                // a double quote character expected to terminate the character or string literal).
+                Some('\\') | None => {
                     missing_close = true;
                     break;
                 }
-                Some('\'') if context.of_character() => {
-                    missing_close = true;
-                    break;
-                }
-                Some('\"') if context.of_string() => {
-                    missing_close = true;
-                    break;
-                }
-                // Encountered a line ending. This is fatal for character literals as it's most
-                // probably caused by a stray and/or missing single quote. However, for strings
-                // it's just another implicit terminator of our Unicode-escapeв character.
                 Some('\n') => {
-                    match context {
-                        OfCharacter => { return None; }
-                        OfString => {
-                            missing_close = true;
-                            break;
-                        }
-                    }
+                    missing_close = true;
+                    break;
                 }
                 Some('\r') if self.peek() == Some('\n') => {
-                    match context {
-                        OfCharacter => { return None; }
-                        OfString => {
-                            missing_close = true;
-                            break;
-                        }
-                    }
+                    missing_close = true;
+                    break;
+                }
+                Some(c) if Some(c) == extra_delimiter => {
+                    missing_close = true;
+                    break;
                 }
                 // Otherwise, it may be a constituent hexadecimal digit, an invalid character,
                 // or another terminator, depending on whether we have seen an opening brace.
@@ -1003,7 +1093,7 @@ impl<'a> StringScanner<'a> {
         assert!((value <= 0x10FFFF) && !((0xD800 <= value) && (value <= 0xDFFF)));
 
         // TODO: Replace this with std::char::from_u32_unchecked() when it is stabilized
-        return Some(char::from_u32(value).unwrap());
+        return char::from_u32(value).unwrap();
     }
 
     /// Convert an ASCII hex digit character to its numeric value
@@ -1663,8 +1753,8 @@ mod tests {
             ScannerTestSlice(".",                Token::Dot),
             ScannerTestSlice("'test\rline'",     Token::Character),
             ScannerTestSlice("'another\rtest",   Token::Unrecognized),
-        ], &[ Span::new(0, 2), Span::new(20, 22), Span::new(29, 31), Span::new(39, 40),
-              Span::new(34, 45), Span::new(53, 54), Span::new(45, 47) ], &[]);
+        ], &[ Span::new( 0, 16), Span::new(20, 27), Span::new(29, 31), Span::new(39, 40),
+              Span::new(34, 45), Span::new(53, 54), Span::new(45, 58) ], &[]);
     }
 
     #[test]
@@ -1677,8 +1767,10 @@ mod tests {
                                                                        Span::new(0, 3) ], &[]);
         check(&[ ScannerTestSlice("'\\y",   Token::Unrecognized) ], &[ Span::new(1, 3),
                                                                        Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("'\\u",   Token::Unrecognized) ], &[ Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("'\\u{",  Token::Unrecognized) ], &[ Span::new(0, 4) ], &[]);
+        check(&[ ScannerTestSlice("'\\u",   Token::Unrecognized) ], &[ Span::new(3, 3),
+                                                                       Span::new(0, 3) ], &[]);
+        check(&[ ScannerTestSlice("'\\u{",  Token::Unrecognized) ], &[ Span::new(3, 4),
+                                                                       Span::new(0, 4) ], &[]);
         check(&[ ScannerTestSlice("'\\u{}", Token::Unrecognized) ], &[ Span::new(3, 5),
                                                                        Span::new(0, 5) ], &[]);
     }
@@ -1741,9 +1833,10 @@ mod tests {
             ScannerTestSlice(r"'\u{123, missing",       Token::Unrecognized),
             ScannerTestSlice("\n",                      Token::Whitespace),
             ScannerTestSlice(r"'\u{more missing",       Token::Unrecognized),
-        ], &[ Span::new( 7,  7), Span::new(12, 13), Span::new(18, 24), Span::new(34, 34),
-              Span::new(29, 34), Span::new(39, 57), Span::new(79, 79), Span::new(62, 79),
-              Span::new(81, 97), Span::new(98, 114) ], &[]);
+        ], &[ Span::new(  7,   7), Span::new(12,  13), Span::new(18, 24), Span::new( 34,  34),
+              Span::new( 29,  34), Span::new(39,  57), Span::new(79, 79), Span::new( 62,  79),
+              Span::new( 97,  97), Span::new(84,  97), Span::new(81, 97), Span::new(114, 114),
+              Span::new(101, 114), Span::new(98, 114) ], &[]);
     }
 
     #[test]
@@ -1808,18 +1901,21 @@ mod tests {
             ScannerTestSlice(" ",           Token::Whitespace),
 
             // Attempts at line-continuation
-            ScannerTestSlice("'\\\n'",      Token::Character),
-            ScannerTestSlice(" ",           Token::Whitespace),
-            ScannerTestSlice("'\\\r\n'",    Token::Character),
-            ScannerTestSlice(" ",           Token::Whitespace),
-            ScannerTestSlice("'\\\r'",      Token::Character),
-            ScannerTestSlice(" ",           Token::Whitespace),
-            ScannerTestSlice("'\\\n\t!!!'", Token::Character),
+            ScannerTestSlice("'\\",         Token::Unrecognized),
+            ScannerTestSlice("\n",          Token::Whitespace),
+            ScannerTestSlice("' '",         Token::Character),
+            ScannerTestSlice("  ",          Token::Whitespace),
+            ScannerTestSlice("'foo\\",      Token::Unrecognized),
+            ScannerTestSlice("\r\n",        Token::Whitespace),
+            ScannerTestSlice("' '",         Token::Character),
+            ScannerTestSlice("  ",          Token::Whitespace),
+            ScannerTestSlice("'b\\\t\\",    Token::Unrecognized),
+            ScannerTestSlice("\n\t",          Token::Whitespace),
+            ScannerTestSlice("'",           Token::Unrecognized),
         ], &[ Span::new( 1,  3), Span::new( 6,  8), Span::new(11, 13), Span::new(16, 18),
               Span::new(21, 23), Span::new(26, 28), Span::new(25, 30), Span::new(32, 34),
-              Span::new(37, 40), Span::new(43, 45), Span::new(42, 47), Span::new(50, 50),
-              Span::new(55, 55), Span::new(61, 62), Span::new(60, 62), Span::new(66, 66),
-              Span::new(64, 72),
+              Span::new(37, 40), Span::new(43, 45), Span::new(42, 47), Span::new(48, 50),
+              Span::new(56, 61), Span::new(70, 72), Span::new(68, 73), Span::new(75, 76),
         ], &[]);
     }
 
@@ -1915,8 +2011,10 @@ mod tests {
                                                                         Span::new(0, 3) ], &[]);
         check(&[ ScannerTestSlice("\"\\y",   Token::Unrecognized) ], &[ Span::new(1, 3),
                                                                         Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("\"\\u",   Token::Unrecognized) ], &[ Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("\"\\u{",  Token::Unrecognized) ], &[ Span::new(0, 4) ], &[]);
+        check(&[ ScannerTestSlice("\"\\u",   Token::Unrecognized) ], &[ Span::new(3, 3),
+                                                                        Span::new(0, 3) ], &[]);
+        check(&[ ScannerTestSlice("\"\\u{",  Token::Unrecognized) ], &[ Span::new(3, 4),
+                                                                        Span::new(0, 4) ], &[]);
         check(&[ ScannerTestSlice("\"\\u{}", Token::Unrecognized) ], &[ Span::new(3, 5),
                                                                         Span::new(0, 5) ], &[]);
     }
@@ -1967,7 +2065,7 @@ mod tests {
               Span::new( 97,  97), Span::new( 84,  97), Span::new(137, 137), Span::new(124, 137),
               Span::new(158, 184), Span::new(199, 199), Span::new(189, 199), Span::new(222, 222),
               Span::new(212, 222), Span::new(242, 242), Span::new(234, 242), Span::new(242, 244),
-              Span::new(246, 263),
+              Span::new(263, 263), Span::new(249, 263), Span::new(246, 263),
         ], &[]);
     }
 
