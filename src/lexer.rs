@@ -71,6 +71,9 @@ pub enum Token {
     /// A raw string of characters
     RawString,
 
+    /// An identifier (of any kind)
+    Identifier,
+
     /// Marker token denoting invalid character sequences
     Unrecognized,
 }
@@ -228,6 +231,30 @@ enum StringSpecials {
     UnexpectedTerminator,
 }
 
+/// Indicator values used in scanning identifiers. These are returned by
+/// `StringScanner::scan_one_character_of_identifier()` when the next character
+/// is not a regular character of an identifier.
+enum IdentifierSpecials {
+    /// Literal dot encountered. It has not been scanned over yet.
+    Dot,
+
+    /// Literal decimal digit encountered. It has not been scanned over yet.
+    Digit,
+
+    /// Definite identifier terminator encountered (such as line ending, the
+    /// end of stream, a comment starting sequence (`//` or `/*`), or some
+    /// ASCII character that is not used in identifiers, like `[` or ':').
+    /// The terminator character has not been scanned over yet.
+    Terminator,
+
+    /// Scanned over an invalid Unicode escape which did not produce
+    /// a reliable character.
+    IncorrectUnicodeEscape,
+
+    /// Scanned over a Unicode escape representing an ASCII character.
+    AsciiUnicodeEscape,
+}
+
 impl<'a> StringScanner<'a> {
     /// Make a new scanner for a given string
     pub fn new<'b>(s: &'b str, reporter: &'b SpanReporter<'b>) -> StringScanner<'b> {
@@ -249,6 +276,17 @@ impl<'a> StringScanner<'a> {
             Some(c) => { self.pos += c.len_utf8(); }
             None    => { }
         }
+    }
+
+    /// Undo a read and put a character back into `cur` buffer.
+    ///
+    /// This method is used by identifier scanning code to properly deal with Unicode escapes
+    /// without scanning over them several times. It can only unread a single most recently read
+    /// character. Think twice before using this method elsewhere.
+    fn unread(&mut self, c: char, prev_pos: usize) {
+        self.cur = Some(c);
+        self.pos = self.prev_pos;
+        self.prev_pos = prev_pos;
     }
 
     /// Peek the next character without updating anything
@@ -278,16 +316,11 @@ impl<'a> StringScanner<'a> {
             ' ' | '\t' | '\n' | '\r' => {
                 self.scan_whitespace();
             }
-            '/' => {
-                match self.peek() {
-                    Some('/') => {
-                        self.scan_line_comment();
-                    }
-                    Some('*') => {
-                        self.scan_block_comment();
-                    }
-                    _ => { panic!("unimplemented"); }
-                }
+            '/' if self.peek() == Some('/') => {
+                self.scan_line_comment();
+            }
+            '/' if self.peek() == Some('*') => {
+                self.scan_block_comment();
             }
             '(' => { self.read(); self.tok = Token::Lparen; }
             ')' => { self.read(); self.tok = Token::Rparen; }
@@ -297,16 +330,9 @@ impl<'a> StringScanner<'a> {
             '}' => { self.read(); self.tok = Token::Rbrace; }
             ',' => { self.read(); self.tok = Token::Comma; }
             ';' => { self.read(); self.tok = Token::Semicolon; }
-            '.' => {
-                match self.peek() {
-                    Some('.') => {
-                        panic!("unimplemented"); // identifiers
-                    }
-                    _ => {
-                        self.read();
-                        self.tok = Token::Dot;
-                    }
-                }
+            '.' if self.peek() != Some('.') => {
+                self.read();
+                self.tok = Token::Dot;
             }
             ':' => {
                 self.read();
@@ -339,7 +365,9 @@ impl<'a> StringScanner<'a> {
                     }
                 }
             }
-            _ => { panic!("unimplemented"); }
+            _ => {
+                self.scan_identifier();
+            }
         }
 
         self.end = self.prev_pos;
@@ -503,7 +531,7 @@ impl<'a> StringScanner<'a> {
             } else if c == '+' || c == '-' {
                 // An 'e' followed by a sign which is followed by a number is an exponent.
                 // If the sign is not followed by a number then we've seen just a suffix "e"
-                // with '+' or '-' being a part of some symbol-identifier that follows.
+                // with '+' or '-' being a part of some mark-identifier that follows.
                 let c = self.peekpeek().unwrap_or('\0');
 
                 if StringScanner::is_digit(c, 10) || c == '_' {
@@ -809,6 +837,51 @@ impl<'a> StringScanner<'a> {
         }
     }
 
+    /// Scan over a single character or escape sequence for an identifier. Returns an Ok character
+    /// if it was scanned successfully, or a special indicator value if there was no character to
+    /// scan. Note that there is a difference between 'successfully scanned over a character or
+    /// an escape sequence' and 'scanned over a correct and valid identifier'.
+    fn scan_one_character_of_identifier(&mut self) -> Result<char, IdentifierSpecials> {
+        use self::IdentifierSpecials::*;
+        match self.cur {
+            // Backslash is a marker of escape sequences
+            Some('\\') => {
+                return self.scan_identifier_escape_sequence();
+            }
+            // Identifiers have a pretty impressive terminator list. Basically, it's everything
+            // that is definitely not an ASCII identifier constituent and starts some other token,
+            // including the whitespace and the end of character stream.
+            Some('(') | Some(')') | Some('[') | Some(']') | Some('{') | Some('}') | Some(',') |
+            Some(';') | Some(':') | Some('"') | Some(' ') | Some('\'') | Some('\n') | Some('\r') |
+            Some('\t') | None => {
+                return Err(Terminator);
+            }
+            // There are a couple of exceptions, though. Comments are delimited by characters from
+            // mark identifier set. However, sequences "/*" and "//" are not allowed in them.
+            // Non-mark identifiers form a boundary when followed by these characters
+            Some('/') if (self.peek() == Some('/') || self.peek() == Some('*')) => {
+                return Err(Terminator);
+            }
+            // Also, dots may or may not be constituents of mark identifiers. However, here
+            // we do not know the kind of identifier is being scanned, so we defer processing
+            // of this case to the caller.
+            Some('.') => {
+                return Err(Dot);
+            }
+            // The same this is with decimal digits which are continuations of word identifiers,
+            // but they are terminators for all other identifier kinds as they start numbers.
+            Some('0') | Some('1') | Some('2') | Some('3') | Some('4') |
+            Some('5') | Some('6') | Some('7') | Some('8') | Some('9') => {
+                return Err(Digit);
+            }
+            // Everything else is just a single character
+            Some(c) => {
+                self.read();
+                return Ok(c);
+            }
+        }
+    }
+
     /// Scan over an escape sequence allowed in character literals. Returns an Ok value denoted
     /// by the sequence (which is not guaranteed to be accurate), or a special indicator value.
     fn scan_character_escape_sequence(&mut self) -> Result<char, CharacterSpecials> {
@@ -917,6 +990,44 @@ impl<'a> StringScanner<'a> {
             // Immediately notify the caller that a closing double quote will never arrive.
             None => {
                 return Err(UnexpectedTerminator);
+            }
+        }
+    }
+
+    /// Scan over an escape sequence allowed in identifiers. Returns an Ok value denoted by
+    /// the sequence (which is not guaranteed to be accurate), or a special indicator value.
+    fn scan_identifier_escape_sequence(&mut self) -> Result<char, IdentifierSpecials> {
+        use self::IdentifierSpecials::*;
+
+        // All escape sequences start with a backslash
+        assert!(self.cur == Some('\\'));
+        self.read();
+
+        match self.cur {
+            // \u... is a universal marker of a Unicode escape
+            Some('u') => {
+                let old_prev_pos = self.prev_pos;
+                return match self.scan_escape_unicode(None) {
+                    // Do not allow ASCII characters to be written as Unicode escapes.
+                    //
+                    // Rationale:
+                    //
+                    //   1. Unicode escapes may be surprisingly abused in some contexts,
+                    //      such as "♠.\u{2E}", "\u{2E}..", "+\u{31}2".
+                    //
+                    //   2. They are intended as a fallback for Unicode characters,
+                    //      not as a generic ASCII encoding for programs.
+                    //
+                    //   3. Other ASCII-only tokens do not allow escapes.
+                    Some(c) if c <= '\u{7F}' => Err(AsciiUnicodeEscape),
+                    Some(c)                  => Ok(c),
+                    None                     => Err(IncorrectUnicodeEscape)
+                };
+            }
+
+            // Identifiers don't allow any escape sequences other than Unicode escapes.
+            _ => {
+                return Err(IncorrectUnicodeEscape);
             }
         }
     }
@@ -1182,6 +1293,261 @@ impl<'a> StringScanner<'a> {
         }
 
         return true;
+    }
+
+    /// Scan over an identifier
+    fn scan_identifier(&mut self) {
+        use unicode::sash_identifiers;
+        use unicode::sash_identifiers::{WORD_START, MARK_START, QUOTE_START};
+        use self::IdentifierSpecials::*;
+
+        let mut seen_start = false;
+
+        loop {
+            // Look at the first character and try to decide what to do next
+            let old_prev_pos = self.prev_pos;
+            match self.scan_one_character_of_identifier() {
+                Ok(c) => {
+                    let category = sash_identifiers::category_of(c);
+
+                    // Dispatch to the kind-specific loops based on the starter character
+                    if category.is(WORD_START) {
+                        seen_start = true;
+                        self.scan_identifier_word(c);
+                        break;
+                    }
+                    if category.is(MARK_START) {
+                        seen_start = true;
+                        self.scan_identifier_mark(c);
+                        break;
+                    }
+                    if category.is(QUOTE_START) {
+                        seen_start = true;
+                        self.scan_identifier_quote(c);
+                        break;
+                    }
+
+                    // If this does not seem to be a valid starter character, continue scanning
+                    // in hope that this one was a mistake and some proper starter will show up
+                    self.report.error(Span::new(old_prev_pos, self.prev_pos),
+                        "Incorrect identifier character");
+                }
+                // The same is true for invalid Unicode escapes, just carry on scanning
+                Err(IncorrectUnicodeEscape) => {
+                    self.report.error(Span::new(old_prev_pos, self.prev_pos),
+                        "Incorrect identifier character");
+                }
+                // For ASCII escapes it's also true, just with a different message
+                Err(AsciiUnicodeEscape) => {
+                    self.report.error(Span::new(old_prev_pos, self.prev_pos),
+                        "ASCII is not allowed in identifier Unicode fallback");
+                }
+                // A literal dot can start a mark identifier, but only if it is followed
+                // by at least one another literal dot. Otherwise it is a Token::Dot and
+                // we should stop scanning the (invalid) identifier.
+                Err(Dot) => {
+                    if self.peek() == Some('.') {
+                        seen_start = true;
+                        self.scan_identifier_mark('.');
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+                // We have seen something that definitely starts some other token without seeing
+                // a proper starter character for an identifier. Give up and return Unrecognized.
+                // (Here decimal digits start an integer token.)
+                Err(Terminator) | Err(Digit) => {
+                    break;
+                }
+            }
+        }
+
+        if !seen_start {
+            self.tok = Token::Unrecognized;
+        }
+    }
+
+    /// Scan over a word identifier
+    fn scan_identifier_word(&mut self, initial: char) {
+        use unicode::sash_identifiers;
+        use unicode::sash_identifiers::{WORD_START, WORD_CONTINUE, MARK_START, QUOTE_START};
+        use self::IdentifierSpecials::*;
+
+        // Word identifiers must start with a proper starter
+        assert!(sash_identifiers::category_of(initial).is(WORD_START));
+
+        loop {
+            let old_prev_pos = self.prev_pos;
+            match self.scan_one_character_of_identifier() {
+                // Well, okay, another character has been correctly scanned over
+                Ok(c) => {
+                    let category = sash_identifiers::category_of(c);
+
+                    // Just go on scanning thw word if this a valid continuation
+                    if category.is(WORD_CONTINUE) {
+                        continue;
+                    }
+
+                    // However, if we have scanned over a starter of another identifier kind,
+                    // put the character back into the buffer and stop scanning
+                    if category.is(MARK_START | QUOTE_START) {
+                        self.unread(c, old_prev_pos);
+                        break;
+                    }
+
+                    // If this does not seem to be a valid continuation character, just report it,
+                    // greedily eat it, and go on scanning, pretending that this was an accident.
+                    self.report.error(Span::new(old_prev_pos, self.prev_pos),
+                        "Incorrect identifier character");
+                }
+                // The same is true for invalid Unicode escapes, just report and carry on scanning
+                Err(IncorrectUnicodeEscape) => {
+                    self.report.error(Span::new(old_prev_pos, self.prev_pos),
+                        "Incorrect identifier character");
+                }
+                // For ASCII escapes it's also true, just with a different message
+                Err(AsciiUnicodeEscape) => {
+                    self.report.error(Span::new(old_prev_pos, self.prev_pos),
+                        "ASCII is not allowed in identifier Unicode fallback");
+                }
+                // Decimal digits are valid contiuations of word identifiers
+                Err(Digit) => {
+                    assert!(sash_identifiers::category_of(self.cur.unwrap()).is(WORD_CONTINUE));
+                    self.read();
+                    continue;
+                }
+                // A clean termiantor of an identifier has been seen.
+                // This includes dots for words.
+                Err(Dot) | Err(Terminator) => {
+                    break;
+                }
+            }
+        }
+
+        self.tok = Token::Identifier;
+    }
+
+    /// Scan over a mark identifier
+    fn scan_identifier_mark(&mut self, initial: char) {
+        use unicode::sash_identifiers;
+        use unicode::sash_identifiers::{WORD_START, MARK_START, MARK_CONTINUE, QUOTE_START};
+        use self::IdentifierSpecials::*;
+
+        // Mark identifiers must start with a proper starter
+        assert!(sash_identifiers::category_of(initial).is(MARK_START));
+
+        loop {
+            let old_prev_pos = self.prev_pos;
+            match self.scan_one_character_of_identifier() {
+                // Well, okay, another character has been correctly scanned over
+                Ok(c) => {
+                    let category = sash_identifiers::category_of(c);
+
+                    // Just go on scanning thw word if this a valid continuation
+                    if category.is(MARK_CONTINUE) {
+                        continue;
+                    }
+
+                    // However, if we have scanned over a starter of another identifier kind,
+                    // put the character back into the buffer and stop scanning
+                    if category.is(WORD_START | QUOTE_START) {
+                        self.unread(c, old_prev_pos);
+                        break;
+                    }
+
+                    // If this does not seem to be a valid continuation character, just report it,
+                    // greedily eat it, and go on scanning, pretending that this was an accident.
+                    self.report.error(Span::new(old_prev_pos, self.prev_pos),
+                        "Incorrect identifier character");
+                }
+                // The same is true for invalid Unicode escapes, just report and carry on scanning
+                Err(IncorrectUnicodeEscape) => {
+                    self.report.error(Span::new(old_prev_pos, self.prev_pos),
+                        "Incorrect identifier character");
+                }
+                // For ASCII escapes it's also true, just with a different message
+                Err(AsciiUnicodeEscape) => {
+                    self.report.error(Span::new(old_prev_pos, self.prev_pos),
+                        "ASCII is not allowed in identifier Unicode fallback");
+                }
+                // We have seen a literal dot. It is allowed in marks as long as it is followed by
+                // at least one more literal dot. If that is the case, scan over all these dots.
+                // Otherwise stop scanning the identifier without consuming this to-be-Token::Dot.
+                Err(Dot) => {
+                    if self.peek() == Some('.') {
+                        while self.cur == Some('.') {
+                            self.read();
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                // A clean termiantor of an identifier has been seen.
+                // This includes decimal digits for mark identifiers.
+                Err(Terminator) | Err(Digit) => {
+                    break;
+                }
+            }
+        }
+
+        self.tok = Token::Identifier;
+    }
+
+    /// Scan over a quote identifier
+    fn scan_identifier_quote(&mut self, initial: char) {
+        use unicode::sash_identifiers;
+        use unicode::sash_identifiers::{WORD_START, MARK_START, QUOTE_START, QUOTE_CONTINUE};
+        use self::IdentifierSpecials::*;
+
+        // Quote identifiers must start with a proper starter
+        assert!(sash_identifiers::category_of(initial).is(QUOTE_START));
+
+        loop {
+            let old_prev_pos = self.prev_pos;
+            match self.scan_one_character_of_identifier() {
+                // Well, okay, another character has been correctly scanned over
+                Ok(c) => {
+                    let category = sash_identifiers::category_of(c);
+
+                    // Quote identifiers are one-character tokens. If we have scanned over
+                    // a starter of any identifier kind, put the character back into the buffer
+                    // and stop scanning.
+                    if category.is(WORD_START | MARK_START | QUOTE_START) {
+                        self.unread(c, old_prev_pos);
+                        break;
+                    }
+
+                    // Otherwise, report an an error, consume the character, and go on scanning,
+                    // pretending that this was an accident. We use a slightly different message
+                    // for combining modifiers which are allowed in all other identifier kinds.
+                    if category.is(QUOTE_CONTINUE) {
+                        self.report.error(Span::new(old_prev_pos, self.prev_pos),
+                            "Combining modifiers are not allowed after quotes");
+                    } else {
+                        self.report.error(Span::new(old_prev_pos, self.prev_pos),
+                            "Incorrect identifier character");
+                    }
+                }
+                // The same is true for invalid Unicode escapes, just report and carry on scanning
+                Err(IncorrectUnicodeEscape) => {
+                    self.report.error(Span::new(old_prev_pos, self.prev_pos),
+                        "Incorrect identifier character");
+                }
+                // For ASCII escapes it's also true, just with a different message
+                Err(AsciiUnicodeEscape) => {
+                    self.report.error(Span::new(old_prev_pos, self.prev_pos),
+                        "ASCII is not allowed in identifier Unicode fallback");
+                }
+                // A clean termiantor of an identifier has been seen.
+                // This includes decimal digits and dots for quote identifiers.
+                Err(Dot) | Err(Terminator) | Err(Digit) => {
+                    break;
+                }
+            }
+        }
+
+        self.tok = Token::Identifier;
     }
 }
 
@@ -2234,6 +2600,675 @@ mod tests {
     //       However, maybe these should be parsed as invalid multipart identifiers.
 
     // TODO: type suffixes
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // Identifiers
+
+    #[test]
+    fn identifier_ascii_words() {
+        check(&[
+            ScannerTestSlice("word",         Token::Identifier),
+            ScannerTestSlice(" ",            Token::Whitespace),
+            ScannerTestSlice("_underscore_", Token::Identifier),
+            ScannerTestSlice(" ",            Token::Whitespace),
+            ScannerTestSlice("__",           Token::Identifier),
+            ScannerTestSlice(" ",            Token::Whitespace),
+            ScannerTestSlice("x1234567890",  Token::Identifier),
+            ScannerTestSlice(" ",            Token::Whitespace),
+            ScannerTestSlice("_9_",          Token::Identifier),
+            ScannerTestSlice(" ",            Token::Whitespace),
+            ScannerTestSlice("UpperCase",    Token::Identifier),
+            ScannerTestSlice(" ",            Token::Whitespace),
+            ScannerTestSlice("OMG11111",     Token::Identifier),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn identifier_ascii_marks() {
+        check(&[
+            ScannerTestSlice("+",                Token::Identifier),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice("-",                Token::Identifier),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice("*",                Token::Identifier),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice("/",                Token::Identifier),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice("<=",               Token::Identifier),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice("=",                Token::Identifier),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice("==",               Token::Identifier),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice("..",               Token::Identifier),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice("...",              Token::Identifier),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice("..+..=../..*..",   Token::Identifier),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice("<$>",              Token::Identifier),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice("&&",               Token::Identifier),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice("??",               Token::Identifier),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice("+++",              Token::Identifier),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice("%/%",              Token::Identifier),
+            ScannerTestSlice(" ",                Token::Whitespace),
+            ScannerTestSlice("<$%&*+|-~/=@^>!?", Token::Identifier),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn identifier_unicode_words() {
+        check(&[
+    // Lu, Ll, Lo
+            ScannerTestSlice("\u{0054}\u{0068}\u{1EED}\u{005F}\u{006E}\u{0067}\u{0068}\u{0069}\
+                              \u{1EC7}\u{006D}",                            Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{0583}\u{0578}\u{0580}\u{0571}\u{0561}\u{0580}\u{056F}\u{0578}\
+                              \u{0582}\u{0574}",                            Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{0422}\u{0435}\u{0441}\u{0442}\u{0423}\u{0432}\u{0430}\u{043D}\
+                              \u{043D}\u{042F}",                            Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{09AA}\u{09B0}\u{09C0}\u{0995}\u{09CD}\u{09B7}\u{09BE}\u{09AE}\
+                              \u{09C2}\u{09B2}\u{0995}",                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{691C}\u{67FB}",                            Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{062A}\u{062C}\u{0631}\u{064A}\u{0628}",    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{1780}\u{17B6}\u{179A}\u{1792}\u{17D2}\u{179C}\u{17BE}\u{178F}\
+                              \u{17C1}\u{179F}\u{17D2}\u{178F}",            Token::Identifier),
+
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+    // Lt
+            ScannerTestSlice("\u{01F2}\u{0061}\u{0031}",                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{1FAA}",                                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+    // Lm
+            ScannerTestSlice("\u{1D2E}\u{1D43}\u{1D48}",                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{02C7}\u{02E4}\u{06E6}",                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+    // Nl
+            ScannerTestSlice("\u{2169}\u{216C}\u{2164}",                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{3007}\u{3007}\u{3007}",                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{12461}\u{12468}",                          Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+    // Other_ID_Start
+            ScannerTestSlice("\u{2118}\u{212E}",                            Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{212E}\u{2118}",                            Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+    // Mn (continue)
+            ScannerTestSlice("\u{0043}\u{0364}\u{0348}\u{0359}\u{0345}\u{032E}\u{0323}\u{035A}\
+              \u{0074}\u{0342}\u{0351}\u{0351}\u{0309}\u{0363}\u{0301}\u{035E}\u{0331}\u{0325}\
+              \u{032A}\u{034E}\u{0329}\u{031E}\u{0068}\u{035F}\u{0075}\u{0368}\u{0365}\u{0359}\
+              \u{006C}\u{036E}\u{0307}\u{0358}\u{031E}\u{0356}\u{0329}\u{0330}\u{0326}\u{0068}\
+              \u{0351}\u{030C}\u{0312}\u{0367}\u{033C}\u{035A}\u{0075}\u{0350}\u{034A}\u{036E}\
+              \u{0336}\u{0329}\u{0320}\u{031E}",                            Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+    // Mc (continue)
+            ScannerTestSlice("\u{09A6}\u{09C0}\u{09B0}\u{09CD}\u{0998}",    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{0932}\u{0902}\u{092C}\u{0947}\u{005F}\u{0938}\u{092E}\u{092F}\
+                              \u{005F}\u{0924}\u{0915}",                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+    // Nd (continue)
+            ScannerTestSlice("\u{005F}\u{0661}\u{0665}",                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{0996}\u{09BE}\u{09A6}\u{09CD}\u{09AF}\u{09E7}\u{0AE7}\u{0DE9}\
+                              \u{1040}\u{A8D6}",                            Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+    // Pc (continue)
+            ScannerTestSlice("\u{0061}\u{203F}\u{0062}",                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{0078}\u{FE4D}\u{0079}",                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{005F}\u{FE4F}\u{005F}",                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+    // Other_ID_Continue
+            ScannerTestSlice("\u{0057}\u{00B7}\u{006F}\u{00B7}\u{0057}",    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{1213}\u{121F}\u{1226}\u{1369}\u{136A}\u{136B}\u{136C}\u{136D}\
+                              \u{136E}\u{136F}\u{1370}\u{1371}",            Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{03A4}\u{0387}\u{03C1}\u{0387}\u{03BF}\u{0387}\u{03C6}\u{0387}\
+                              \u{03AE}\u{0387}",                            Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{0078}\u{19DA}",                            Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+    // ZWJ, ZWNJ
+            ScannerTestSlice("\u{0CA8}\u{0CCD}\u{0CA8}",                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{0CA8}\u{0CCD}\u{200C}\u{0CA8}",            Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{0915}\u{094D}\u{0937}",                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{0915}\u{094D}\u{200D}\u{0937}",            Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645}",
+                                                                            Token::Identifier),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn identifier_unicode_marks() {
+        check(&[
+    // Pd
+            ScannerTestSlice("\u{2015}\u{301C}\u{FE31}\u{2010}\u{30A0}",Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+    // Po
+            ScannerTestSlice("\u{00B6}\u{066A}\u{1364}",                Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{2042}\u{2037}\u{203B}",                Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{203C}\u{A8CE}\u{FE60}\u{FF0A}",        Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{110BB}\u{111DD}\u{115C9}",             Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{2025}",                                Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{2026}",                                Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+    // Sc
+            ScannerTestSlice("\u{00A2}\u{00A5}\u{20A1}\u{0BF9}\u{20B8}\u{FE69}\u{FF04}",
+                                                                        Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+    // Sm
+            ScannerTestSlice("\u{00D7}\u{207C}",                        Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{2192}\u{2192}\u{2194}",                Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{220F}\u{2230}",                        Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{2257}",                                Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{229D}\u{2AF7}\u{2AF5}",                Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+    // So
+            ScannerTestSlice("\u{00A9}\u{06DE}\u{0BF5}",                Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{19FB}\u{19FF}",                        Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{2127}\u{21B5}\u{21BA}",                Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{2375}\u{236A}\u{2361}\u{2360}",        Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{2569}\u{2566}\u{2573}\u{2588}",        Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{25E9}\u{2625}\u{2639}\u{265B}\u{2690}",Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{26B5}\u{1D1E7}",                       Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{1D332}\u{1D354}\u{1D940}",             Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{1F300}\u{1F401}\u{1F423}\u{1F4B3}\u{1F980}",
+                                                                        Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+    // Mc (continue)
+            ScannerTestSlice("\u{0021}\u{17BF}\u{0026}\u{0DDB}\u{002A}\u{0CCB}",
+                                                                        Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+    // Me (continue)
+            ScannerTestSlice("\u{0024}\u{0488}",                        Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{003C}\u{20DD}\u{003E}\u{20DE}",        Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+            ScannerTestSlice("\u{0021}\u{20DF}",                        Token::Identifier),
+            ScannerTestSlice(" ",                                       Token::Whitespace),
+    // Mn (continue)
+            ScannerTestSlice("\u{227A}\u{0307}\u{0301}\u{0301}\u{030D}\u{030C}\u{0311}\u{033C}\
+              \u{0353}\u{0359}\u{2203}\u{034F}\u{0317}\u{2202}\u{0363}\u{036B}\u{0342}\u{0342}\
+              \u{035B}\u{031A}\u{0317}\u{033C}\u{0356}\u{031C}\u{0323}\u{2200}\u{033B}\u{033C}\
+              \u{222D}\u{030E}\u{030F}\u{032D}\u{033A}",                Token::Identifier),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn identifier_unicode_delimiters() {
+        check(&[
+    // Ps
+            ScannerTestSlice("\u{2045}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{2768}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{2774}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{300E}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{FE3D}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{FE5D}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{2987}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{3008}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+    // Pe
+            ScannerTestSlice("\u{0F3B}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{0F3D}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{276B}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{300B}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{FE18}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{FF63}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{2992}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+    // Pi
+            ScannerTestSlice("\u{00AB}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{201B}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{2E02}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{2E09}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{2E1C}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{2E20}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+    // Pf
+            ScannerTestSlice("\u{00BB}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{2E03}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{203A}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{2E21}",    Token::Identifier),
+            ScannerTestSlice(" ",           Token::Whitespace),
+            ScannerTestSlice("\u{2019}",    Token::Identifier),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn identifier_escape_basic() {
+        check(&[
+            ScannerTestSlice(r"\u{0442}\u{0435}\u{0441}\u{0442}",           Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice(r"\u{01CB}\u{114D1}\u{114D2}\u{114D3}",        Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice(r"\u{062A}\u{062C}\u{0631}\u{064A}\u{0628}",   Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice(r"\u{2026}\u{2026}\u{2026}",                   Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice(r"\u{00A9}\u{06DE}\u{0BF5}",                   Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice(r"demo\u{Ff11}\u{ff12}\u{fF13}",               Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{041F}\u{0440}\\u{043E}\u{0432}\u{0435}\\u{0440}\u{043A}\\u{0430}",
+                                                                            Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("!\\u{20DF}",                                  Token::Identifier),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn identifier_boundary_rules() {
+        check(&[
+    // Word | Mark
+            ScannerTestSlice("a",                                           Token::Identifier),
+            ScannerTestSlice("/",                                           Token::Identifier),
+            ScannerTestSlice("b",                                           Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("x9",                                          Token::Identifier),
+            ScannerTestSlice("..",                                          Token::Identifier),
+            ScannerTestSlice("y",                                           Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("*",                                           Token::Identifier),
+            ScannerTestSlice("_",                                           Token::Identifier),
+            ScannerTestSlice("*",                                           Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{03BD}\u{03B5}\u{03C1}\u{03CC}",            Token::Identifier),
+            ScannerTestSlice("\u{002B}",                                    Token::Identifier),
+            ScannerTestSlice("\u{03C6}\u{03C9}\u{03C4}\u{03B9}\u{03AC}",    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{221A}",                                    Token::Identifier),
+            ScannerTestSlice("\u{0078}",                                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{222D}",                                    Token::Identifier),
+            ScannerTestSlice("\u{092E}\u{094C}\u{091C}\u{093C}\u{093E}",    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{29BF}",                                    Token::Identifier),
+            ScannerTestSlice("\u{006F}",                                    Token::Identifier),
+            ScannerTestSlice("\u{29BF}",                                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("<",                                           Token::Identifier),
+            ScannerTestSlice("pre\u{0301}sident",                           Token::Identifier),
+            ScannerTestSlice(">",                                           Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{003D}\u{033F}",                            Token::Identifier),
+            ScannerTestSlice("\u{0078}\u{033F}",                            Token::Identifier),
+            ScannerTestSlice("\u{003D}\u{033F}",                            Token::Identifier),
+            ScannerTestSlice("\n",                                          Token::Whitespace),
+    // Word | Quote
+            ScannerTestSlice("\u{00AB}",                                    Token::Identifier),
+            ScannerTestSlice("word",                                        Token::Identifier),
+            ScannerTestSlice("\u{00BB}",                                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{3008}",                                    Token::Identifier),
+            ScannerTestSlice("x",                                           Token::Identifier),
+            ScannerTestSlice("|",                                           Token::Identifier),
+            ScannerTestSlice("y",                                           Token::Identifier),
+            ScannerTestSlice("\u{3009}",                                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{FE43}",                                    Token::Identifier),
+            ScannerTestSlice("\u{3060}\u{307E}\u{3057}\u{307E}\u{3059}",    Token::Identifier),
+            ScannerTestSlice("\u{FE44}",                                    Token::Identifier),
+            ScannerTestSlice("\n",                                          Token::Whitespace),
+    // Mark | Quote
+            ScannerTestSlice("\u{0F3A}",                                    Token::Identifier),
+            ScannerTestSlice("\u{2015}",                                    Token::Identifier),
+            ScannerTestSlice("\u{0F3B}",                                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{00A5}",                                    Token::Identifier),
+            ScannerTestSlice("\u{301D}",                                    Token::Identifier),
+            ScannerTestSlice("\u{00A5}",                                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{228F}\u{0BC6}",                            Token::Identifier),
+            ScannerTestSlice("\u{FE5D}",                                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{FE3E}",                                    Token::Identifier),
+            ScannerTestSlice("\u{27A4}",                                    Token::Identifier),
+            ScannerTestSlice("\u{FE3E}",                                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{1F39B}\u{20E3}",                           Token::Identifier),
+            ScannerTestSlice("\u{2E21}",                                    Token::Identifier),
+            ScannerTestSlice("\u{1F39B}\u{20E3}",                           Token::Identifier),
+            ScannerTestSlice("\n",                                          Token::Whitespace),
+    // Quote | Quote
+            ScannerTestSlice("\u{201D}",                                    Token::Identifier),
+            ScannerTestSlice("\u{201D}",                                    Token::Identifier),
+            ScannerTestSlice("\u{00AB}",                                    Token::Identifier),
+            ScannerTestSlice("\u{00AB}",                                    Token::Identifier),
+            ScannerTestSlice("\u{2039}",                                    Token::Identifier),
+            ScannerTestSlice("\u{203A}",                                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{2E21}",                                    Token::Identifier),
+            ScannerTestSlice("\u{2045}",                                    Token::Identifier),
+            ScannerTestSlice("\u{2770}",                                    Token::Identifier),
+            ScannerTestSlice("\u{2770}",                                    Token::Identifier),
+            ScannerTestSlice("\u{0F3D}",                                    Token::Identifier),
+            ScannerTestSlice("\u{276F}",                                    Token::Identifier),
+            ScannerTestSlice("\u{300F}",                                    Token::Identifier),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn identifier_boundary_rules_escapes() {
+        check(&[
+    // Word | Mark
+            ScannerTestSlice(r"a",                                          Token::Identifier),
+            ScannerTestSlice(r"\u{2215}",                                   Token::Identifier),
+            ScannerTestSlice(r"b",                                          Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\\u{29BF}",                                   Token::Identifier),
+            ScannerTestSlice("\u{03BF}",                                    Token::Identifier),
+            ScannerTestSlice("\\u{29BF}",                                   Token::Identifier),
+            ScannerTestSlice("\n",                                          Token::Whitespace),
+    // Word | Quote
+            ScannerTestSlice(r"\u{00AB}",                                   Token::Identifier),
+            ScannerTestSlice(r"w\u{2113}\u{1d466}d",                        Token::Identifier),
+            ScannerTestSlice("\u{00BB}",                                    Token::Identifier),
+            ScannerTestSlice("\n",                                          Token::Whitespace),
+    // Mark | Quote
+            ScannerTestSlice("\\u{1F39B}\u{20E3}",                          Token::Identifier),
+            ScannerTestSlice("\u{2E21}",                                    Token::Identifier),
+            ScannerTestSlice("\u{1F39B}\\u{20E3}",                          Token::Identifier),
+            ScannerTestSlice("\n",                                          Token::Whitespace),
+    // Quote | Quote
+            ScannerTestSlice("\u{2E21}",                                    Token::Identifier),
+            ScannerTestSlice("\\u{2045}",                                   Token::Identifier),
+            ScannerTestSlice("\u{2770}",                                    Token::Identifier),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn identifier_escape_missing_braces() {
+        check(&[
+            // One can get away with just error messages when there are no braces
+            // around otherwise correct scalar values
+            ScannerTestSlice(r"\u0442\u0435\u0441\u0442",                   Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\\u1794\u{17C3}\\u178F\\u{1784}",             Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            // Even boundary detection rules work in this case
+            ScannerTestSlice(r"\u212f}",                                    Token::Identifier),
+            ScannerTestSlice(r"\u2212}",                                    Token::Identifier),
+            ScannerTestSlice(r"\u2134}",                                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice(r"\u276E",                                     Token::Identifier),
+            ScannerTestSlice(r"\u{72D7}",                                   Token::Identifier),
+            ScannerTestSlice(r"\u300B",                                     Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            // Given correct scalar values, we can also cope with missing starting/closing brace
+            ScannerTestSlice(r"\u{221B\u2192}\u2192\u{2192\u2192",          Token::Identifier), //
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            // However, if '\u' is followed by something that really does not look like a scalar
+            // value, this '\u' is skipped over as if it were legal identifier constituent
+            ScannerTestSlice(r"\u!",                                        Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice(r"\uguu",                                      Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice(r"\u==",                                       Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice(r"\u",                                         Token::Unrecognized),
+            ScannerTestSlice("::",                                          Token::Dualcolon),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice(r"\u",                                         Token::Unrecognized),
+            ScannerTestSlice("]",                                           Token::Rbrack),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\\u\u{301b}",                                 Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice(r"\u\u{301b}",                                 Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            // As in characters, line endings are used to detect missing closing braces
+            ScannerTestSlice(r"\u{30C7}\u{30E2}\u{308",                     Token::Identifier),
+            ScannerTestSlice("\n",                                          Token::Whitespace),
+            // And unexpected EOFs can happen with identifiers too, thought they are not fatal
+            ScannerTestSlice(r"\u{914",                                     Token::Identifier),
+        ], &[ Span::new(  2,   6), Span::new(  8,  12), Span::new( 14,  18), Span::new( 20,  24),
+              Span::new( 27,  31), Span::new( 36,  40), Span::new( 51,  51), Span::new( 58,  58),
+              Span::new( 65,  65), Span::new( 73,  77), Span::new( 87,  91), Span::new( 99,  99),
+              Span::new(101, 101), Span::new(108, 112), Span::new(119, 119), Span::new(121, 125),
+              Span::new(128, 128), Span::new(126, 128), Span::new(132, 132), Span::new(130, 132),
+              Span::new(138, 138), Span::new(136, 138), Span::new(143, 143), Span::new(141, 143),
+              Span::new(148, 148), Span::new(146, 148), Span::new(152, 152), Span::new(150, 152),
+              Span::new(158, 158), Span::new(156, 158), Span::new(189, 189), Span::new(196, 196),
+        ], &[]);
+    }
+
+    #[test]
+    fn identifier_escape_invalid_values() {
+        check(&[
+            // As in characters or strings, missing values, surrogate code points, out-or-range
+            // values, and non-scalar values are not okay
+            ScannerTestSlice("fo\\u{}o",                                    Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("bar\\u{D900}",                                Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("b\\u{9999999999}az",                          Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("D\\u{COMBINING ACUTE ACCENT}mo",              Token::Identifier),
+            ScannerTestSlice("\n",                                          Token::Whitespace),
+            // For boundary detection these are treated as valid values in whatever context we are
+            ScannerTestSlice(r"\u{D800}\u{DDDD}_1\u{DFFF}",                 Token::Identifier),
+            ScannerTestSlice(r"+\u{DEAD}\u{D912}",                          Token::Identifier),
+            ScannerTestSlice(r"\u{2985}",                                   Token::Identifier),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"\u{9999999999999}==\u{Fo fo fo!}\u{a7}",     Token::Identifier),
+            ScannerTestSlice("\n",                                          Token::Whitespace),
+            // But invalid values are not start codes. For example, an entirely invalid sequence
+            // will not count as an identifier. The digits that immediately follow it are a part
+            // of a number, they do not count as XID_Continue which magically converts the whole
+            // thing into a word identifier. The scanner never backtracks.
+            ScannerTestSlice(r"\u{Some}\u{Invalid}\u{Stuff}",               Token::Unrecognized),
+            ScannerTestSlice(r"123",                                        Token::Integer),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            // but they do count if one drops some valid XID_Start in between:
+            ScannerTestSlice(r"\u{Some}\u{Invalid}\u{Stuff}_123",           Token::Identifier),
+        ], &[ Span::new(  4,   6), Span::new(  2,   6), Span::new( 11,  19), Span::new( 11,  19),
+              Span::new( 21,  35), Span::new( 21,  35), Span::new( 41,  65), Span::new( 39,  65),
+              Span::new( 68,  76), Span::new( 68,  76), Span::new( 76,  84), Span::new( 76,  84),
+              Span::new( 86,  94), Span::new( 86,  94), Span::new( 95, 103), Span::new( 95, 103),
+              Span::new(103, 111), Span::new(103, 111), Span::new(120, 137), Span::new(120, 137),
+              Span::new(141, 152), Span::new(139, 152), Span::new(161, 167), Span::new(159, 167),
+              Span::new(169, 178), Span::new(167, 178), Span::new(180, 187), Span::new(178, 187),
+              Span::new(193, 199), Span::new(191, 199), Span::new(201, 210), Span::new(199, 210),
+              Span::new(212, 219), Span::new(210, 219),
+         ], &[]);
+    }
+
+    #[test]
+    fn identifier_invalid_characters_plain() {
+        check(&[
+            // Arbitrary Unicode character sequences are considered invalid. Peculiar cases
+            // in ASCII include control codes (other than whitespace), currently unassigned
+            // backtick (`), and backslashes (\) which are not immediately followed by 'u'.
+            // Non-ASCII cases include usage of characters outside of identifier character set
+            // (e.g., general categories like No, Sk, or C), or usage of bare identifier
+            // continuation characters (without a starter character preceding them). The
+            // whole hunk of such invalid characters is reported as Unrecognized
+            ScannerTestSlice("\u{00}\u{03}\u{04}\u{05}\u{06}\u{07}\u{08}",  Token::Unrecognized),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{12}\u{1A}\u{1B}\u{1C}",                    Token::Unrecognized),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{1D}\u{1E}\u{1F}\u{7F}\u{80}\u{81}",        Token::Unrecognized),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{82}\u{83}\u{84}",                          Token::Unrecognized),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{e123}\u{F700}\u{FF000}\u{100000}",         Token::Unrecognized),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{200B}\u{180E}\u{2062}\u{E0001}\u{E007F}",  Token::Unrecognized),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\\x12",                                       Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\\\\",                                        Token::Unrecognized),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("`foo`",                                       Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{0307}\u{09E3}\\\u{1DA61}\u{200D}",         Token::Unrecognized),
+            ScannerTestSlice("1",                                           Token::Integer),
+            ScannerTestSlice("\u{200C}`\u{200D}x\u{200D}y",                 Token::Identifier),
+            ScannerTestSlice("\n",                                          Token::Whitespace),
+            // However! The scanner tolerates invalid Unicode characters in the middle of
+            // identifiers. They are still reported, but the scanning goes on afterwards
+            // as if they were valid, including their usage for boundary detection.
+            ScannerTestSlice("f\u{0}o",                                     Token::Identifier),
+            ScannerTestSlice("+\u{E666}",                                   Token::Identifier),
+            ScannerTestSlice("_`some`_\\invalid\\123",                      Token::Identifier),
+            ScannerTestSlice("==\u{02DC}==",                                Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("a\u{0488}b",                                  Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("C\u{20DD}_\u{20E3}",                          Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("+\u{200D}+=\u{200D}",                         Token::Identifier),
+        ], &[ Span::new(  0,   1), Span::new(  1,   2), Span::new(  2,   3), Span::new(  3,   4),
+              Span::new(  4,   5), Span::new(  5,   6), Span::new(  6,   7), Span::new(  8,   9),
+              Span::new(  9,  10), Span::new( 10,  11), Span::new( 11,  12), Span::new( 13,  14),
+              Span::new( 14,  15), Span::new( 15,  16), Span::new( 16,  17), Span::new( 17,  19),
+              Span::new( 19,  21), Span::new( 22,  24), Span::new( 24,  26), Span::new( 26,  28),
+              Span::new( 29,  32), Span::new( 32,  35), Span::new( 35,  39), Span::new( 39,  43),
+              Span::new( 44,  47), Span::new( 47,  50), Span::new( 50,  53), Span::new( 53,  57),
+              Span::new( 57,  61), Span::new( 62,  63), Span::new( 67,  68), Span::new( 68,  69),
+              Span::new( 70,  71), Span::new( 74,  75), Span::new( 76,  78), Span::new( 78,  81),
+              Span::new( 81,  82), Span::new( 82,  86), Span::new( 86,  89), Span::new( 90,  93),
+              Span::new( 93,  94), Span::new( 94,  97), Span::new(104, 105), Span::new(107, 110),
+              Span::new(111, 112), Span::new(116, 117), Span::new(118, 119), Span::new(126, 127),
+              Span::new(132, 134), Span::new(138, 140), Span::new(143, 146), Span::new(147, 150),
+              Span::new(152, 155), Span::new(157, 160),
+        ], &[]);
+    }
+
+    #[test]
+    fn identifier_invalid_characters_escaped() {
+        check(&[
+            // The scanner also tolerates (i.e., is able to recover from) invalid escaped Unicode
+            // characters in the middle of identifiers. This also includes surrogates (which can't
+            // be embedded into Rust strings as is), and other invalid escapes.
+            ScannerTestSlice(r"f\u{2000}o",                                 Token::Identifier),
+            ScannerTestSlice(r"+\u{E666}",                                  Token::Identifier),
+            ScannerTestSlice(r"_`some`_\invalid\123",                       Token::Identifier),
+            ScannerTestSlice(r"==\u{02DC}==",                               Token::Identifier),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"a\u{0488}b",                                 Token::Identifier),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"C\u{20DD}_\u{20E3}",                         Token::Identifier),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"+\u{200D}+=\u{200D}",                        Token::Identifier),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"f\u{}o",                                     Token::Identifier),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"f\u{REPLACEMENT CHARACTER}o",                Token::Identifier),
+            ScannerTestSlice(r"+\uD900\uDDDD",                              Token::Identifier),
+            ScannerTestSlice(r"_\u{9999999999999999}_",                     Token::Identifier),
+        ], &[ Span::new(  1,   9), Span::new( 11,  19), Span::new( 20,  21), Span::new( 25,  26),
+              Span::new( 27,  28), Span::new( 35,  36), Span::new( 41,  49), Span::new( 53,  61),
+              Span::new( 64,  72), Span::new( 73,  81), Span::new( 83,  91), Span::new( 93, 101),
+              Span::new(105, 107), Span::new(103, 107), Span::new(112, 135), Span::new(110, 135),
+              Span::new(139, 143), Span::new(137, 143), Span::new(137, 143), Span::new(145, 149),
+              Span::new(143, 149), Span::new(143, 149), Span::new(150, 170), Span::new(150, 170),
+        ], &[]);
+    }
+
+    #[test]
+    fn identifier_unicode_ascii_escapes() {
+        check(&[
+            ScannerTestSlice(r"f\u{6F}o",                                   Token::Identifier),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"example\u{2E}com",                           Token::Identifier),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"\u{2E}\u{2E}\u{2E}",                         Token::Unrecognized),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"\u{2E}",                                     Token::Unrecognized),
+            ScannerTestSlice(r".",                                          Token::Dot),
+            ScannerTestSlice(r"\u{2E}",                                     Token::Unrecognized),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"c\u{31}2",                                   Token::Identifier),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"test\u{0020}test",                           Token::Identifier),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"a\u{2B}b",                                   Token::Identifier),
+        ], &[ Span::new( 1,  7), Span::new(16, 22), Span::new(26, 32), Span::new(32, 38),
+              Span::new(38, 44), Span::new(45, 51), Span::new(52, 58), Span::new(60, 66),
+              Span::new(72, 80), Span::new(86, 92),
+        ], &[]);
+    }
+
+    #[test]
+    fn identifier_invalid_quote_modifiers() {
+        check(&[
+            // One peculiar case is usage of modifier characters after quote identifiers.
+            // Instead of being reported as a separate Unrecognized token they are included
+            // into the quote token (after getting reported, of course).
+            ScannerTestSlice("\u{2045}\u{0488}",                            Token::Identifier),
+            ScannerTestSlice("\u{276E}\u{0DDC}\u{16F7A}",                   Token::Identifier),
+            ScannerTestSlice("\u{0F3D}\u{200D}\u{20DD}",                    Token::Identifier),
+            ScannerTestSlice("\u{FE18}\u{093F}\u{0A3F}",                    Token::Identifier),
+            ScannerTestSlice("\u{00AB}\u{0324}\u{0483}",                    Token::Identifier),
+            ScannerTestSlice("\u{2039}\u{0CC7}",                            Token::Identifier),
+            ScannerTestSlice("\u{2019}\u{20E2}",                            Token::Identifier),
+            ScannerTestSlice("\u{2E0A}\u{17CA}\u{200C}\u{1B3C}",            Token::Identifier),
+        ], &[ Span::new( 3,  5), Span::new( 8, 11), Span::new(11, 15), Span::new(18, 21),
+              Span::new(21, 24), Span::new(27, 30), Span::new(30, 33), Span::new(35, 37),
+              Span::new(37, 39), Span::new(42, 45), Span::new(48, 51), Span::new(54, 57),
+              Span::new(57, 60), Span::new(60, 63),
+        ], &[]);
+    }
+
+    // TODO: boundary tests between all token types
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     // Test helpers
