@@ -199,6 +199,8 @@ impl<'a> Scanner<'a> for StringScanner<'a> {
     }
 }
 
+const REPLACEMENT_CHARACTER: char = '\u{FFFD}';
+
 /// Indicator values used in scanning character literals. These are returned by
 /// `StringScanner::scan_one_character_of_character()` when the next character
 /// is not a regular character of a literal.
@@ -817,7 +819,7 @@ impl<'a> StringScanner<'a> {
         match self.cur {
             // \u... is a universal marker of a Unicode escape
             Some('u') => {
-                return Ok(self.scan_escape_unicode(Some('\'')));
+                return Ok(self.scan_escape_unicode(Some('\'')).unwrap_or(REPLACEMENT_CHARACTER));
             }
 
             // C-style escape sequences and ASCII byte escapes
@@ -870,7 +872,7 @@ impl<'a> StringScanner<'a> {
         match self.cur {
             // \u... is a universal marker of a Unicode escape
             Some('u') => {
-                return Ok(self.scan_escape_unicode(Some('"')));
+                return Ok(self.scan_escape_unicode(Some('"')).unwrap_or(REPLACEMENT_CHARACTER));
             }
 
             // C-style escape sequences and ASCII byte escapes
@@ -956,13 +958,11 @@ impl<'a> StringScanner<'a> {
         return value as char;
     }
 
-    /// Scan over a single Unicode escape sequence. Returns the value of the escape sequence,
-    /// or U+FFFD REPLACEMENT CHARACTER if the sequence was legible but otherwise incorrect.
-    fn scan_escape_unicode(&mut self, extra_delimiter: Option<char>) -> char {
+    /// Scan over a single Unicode escape sequence. Returns Some value of the escape sequence,
+    /// or None if the sequence was legible but otherwise incorrect.
+    fn scan_escape_unicode(&mut self, extra_delimiter: Option<char>) -> Option<char> {
         assert!(self.cur == Some('u'));
         self.read();
-
-        const REPLACEMENT_CHARACTER: u32 = 0xFFFD;
 
         let brace_start = self.prev_pos;
 
@@ -1050,50 +1050,50 @@ impl<'a> StringScanner<'a> {
 
         // Keep our mouth shut about missing/asymmetric braces if there is nothing in them anyway
         if empty_braces {
-            value = REPLACEMENT_CHARACTER;
             self.report.error(Span::new(brace_start, brace_end),
                 "Missing Unicode scalar value");
-        } else {
-            match (missing_open, missing_close) {
-                (true, false) => {
-                    self.report.error(Span::new(brace_start, brace_start),
-                        "Unicode scalar value must start with '{'");
-                }
-                (false, true) => {
-                    self.report.error(Span::new(brace_end, brace_end),
-                        "Unicode scalar value must end with '}'");
-                }
-                (true, true) => {
-                    self.report.error(Span::new(brace_start, brace_end),
-                        "Unicode scalar value must be surrounded with '{' '}'"); // TODO: message
-                }
-                (false, false) => { }
+            return None;
+        }
+
+        match (missing_open, missing_close) {
+            (true, false) => {
+                self.report.error(Span::new(brace_start, brace_start),
+                    "Unicode scalar value must start with '{'");
             }
+            (false, true) => {
+                self.report.error(Span::new(brace_end, brace_end),
+                    "Unicode scalar value must end with '}'");
+            }
+            (true, true) => {
+                self.report.error(Span::new(brace_start, brace_end),
+                    "Unicode scalar value must be surrounded with '{' '}'"); // TODO: message
+            }
+            (false, false) => { }
         }
 
         if invalid_hex {
-            value = REPLACEMENT_CHARACTER;
             self.report.error(Span::new(brace_start, brace_end),
                 "Incorrect Unicode scalar value. Expected only hex digits");
+            return None;
         }
 
         if unicode_overflow {
-            value = REPLACEMENT_CHARACTER;
             self.report.error(Span::new(brace_start - 2, brace_end),
                 "Incorrect Unicode scalar value. Out of range, too big"); // TODO: messages
+            return None;
         }
 
         if (0xD800 <= value) && (value <= 0xDFFF) {
-            value = REPLACEMENT_CHARACTER;
             self.report.error(Span::new(brace_start - 2, brace_end),
                 "Incorrect Unicode scalar value. Surrogate"); // TODO: messages
+            return None;
         }
 
         // At this point we have ensured that `value` *is* a valid Unicode scalar value
         assert!((value <= 0x10FFFF) && !((0xD800 <= value) && (value <= 0xDFFF)));
 
         // TODO: Replace this with std::char::from_u32_unchecked() when it is stabilized
-        return char::from_u32(value).unwrap();
+        return Some(char::from_u32(value).unwrap());
     }
 
     /// Convert an ASCII hex digit character to its numeric value
