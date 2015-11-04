@@ -984,7 +984,7 @@ impl<'a> StringScanner<'a> {
         loop {
             match self.cur {
                 // If a Unicode scalar is braced then it ends with a '}'
-                Some('}') if !missing_open => {
+                Some('}') => {
                     self.read();
                     break;
                 }
@@ -1025,6 +1025,7 @@ impl<'a> StringScanner<'a> {
 
                     if !valid_digit {
                         if missing_open {
+                            missing_close = true;
                             break;
                         }
                         invalid_hex = true;
@@ -1849,8 +1850,8 @@ mod tests {
             ScannerTestSlice(r"'\uguu~'",   Token::Character),
             ScannerTestSlice(" ",           Token::Whitespace),
             ScannerTestSlice(r"'\ux\uy'",   Token::Character),
-        ], &[ Span::new( 3,  3), Span::new( 8,  8), Span::new( 5, 10), Span::new(14, 14),
-              Span::new(11, 19), Span::new(23, 23), Span::new(26, 26), Span::new(20, 28),
+        ], &[ Span::new( 3,  3), Span::new( 8,  9), Span::new(14, 14), Span::new(11, 19),
+              Span::new(23, 23), Span::new(26, 26), Span::new(20, 28),
         ], &[]);
     }
 
@@ -2079,7 +2080,7 @@ mod tests {
             ScannerTestSlice(r#""\uguu~""#,   Token::String),
             ScannerTestSlice(" ",             Token::Whitespace),
             ScannerTestSlice(r#""\ux\uy""#,   Token::String),
-        ], &[ Span::new(3, 3), Span::new(8, 8), Span::new(14, 14), Span::new(23, 23),
+        ], &[ Span::new(3, 3), Span::new(8, 9), Span::new(14, 14), Span::new(23, 23),
               Span::new(26, 26) ], &[]);
     }
 
