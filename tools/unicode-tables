@@ -1,0 +1,1169 @@
+#!/usr/bin/env python
+
+import argparse
+import os.path
+import pickle
+import sys
+import urllib2
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+#
+# Command line processing
+#
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+commandline = argparse.ArgumentParser(description="""
+    This is a helper tool for generating Unicode tables for Sash.
+    It outputs status messages to stderr and valuable data to stdout.
+    """)
+
+commandline.add_argument('--version',
+    nargs=1,
+    metavar='version',
+    type=str,
+    default='latest',
+    help='Full version of Unicode Standard to use (e.g., "8.0.0"). \
+          Type "latest" for the latest one (the default).')
+
+commandline.add_argument('--compare',
+    nargs=2,
+    metavar=('old', 'new'),
+    type=str,
+    help='Compare derived identifier sets for the given pair of standards. \
+          Report any changes and conflicts caused by migration between them.')
+
+commandline_args = commandline.parse_args()
+
+def report_status(s):
+    sys.stderr.write(s)
+    sys.stderr.write('\n')
+    sys.stderr.flush()
+
+def print_data(s):
+    sys.stdout.write(s)
+
+def relative_to_script(path):
+    return os.path.join(os.path.dirname(__file__), path)
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+#
+# Retrieval of raw Unicode data
+#
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+def query_latest_unicode_version():
+    """Retrieve numeric value of the latest Unicode Standard version"""
+    readme = urllib2.urlopen('http://unicode.org/Public/UCD/latest/ReadMe.txt').read()
+    s = readme.find('Version')
+    e = readme.find('of', s)
+    assert (s > 0) and (e > 0)
+    s += len('Version')
+    return readme[s:e].strip()
+
+def retrieve_ucd(ucd, version):
+    """Retrieve Unicode Character Data for the given Unicode Standard version"""
+    filename = relative_to_script('unicode-' + version + '-' + ucd)
+
+    if os.path.isfile(filename):
+        f = open(filename, 'r')
+        data = f.read()
+        f.close()
+    else:
+        url = 'http://unicode.org/Public/' + version + '/ucd/' + ucd
+        data = urllib2.urlopen(url).read()
+        f = open(filename, 'w')
+        f.write(data)
+        f.close()
+
+    return data
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+#
+# Parsing of raw Unicode data
+#
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+def parse_unicode_data(data):
+    """Extract useful information from UnicodeData.txt"""
+    names = {}
+    general_category = {}
+    canonical_combining_class = {}
+    canonical_decompositions = {}
+    compatibility_decompositions = {}
+
+    # Read raw data about characters, deal with hysterical raisins in character ranges
+    raw = {}
+    first_char = -1
+    for line in data.split('\n'):
+        if not line: continue
+        props = line.split(';')
+        assert len(props) == 15
+
+        codepoint = int(props[0], 16)
+
+        if first_char >= 0:
+            assert props[1].endswith(', Last>')
+            for c in xrange(first_char, codepoint):
+                raw[c] = props
+            first_char = -1
+
+        if props[1].endswith(', First>'):
+            first_char = codepoint
+            continue
+
+        raw[codepoint] = props
+
+    # Process known and assigned codepoints
+    assigned_codepoints = set([])
+    for codepoint in raw:
+        assigned_codepoints.add(codepoint)
+
+        [_, name, gen_cat, ccc, bidi, decomp, num_integer, num_digit, num_fraction, bidi_mirror,
+            old_name, iso_comment, simple_upper, simple_lower, simple_title] = raw[codepoint]
+
+        # Store name
+        names[codepoint] = name
+
+        # Store general category
+        if gen_cat not in general_category:
+            general_category[gen_cat] = []
+        general_category[gen_cat].append(codepoint)
+
+        # Store canonical combining class. All codepoints have implicit CCC of zero
+        # unless specified otherwise, so there is no need to store zeros explicitly.
+        if ccc != '0':
+            canonical_combining_class[codepoint] = int(ccc)
+
+        # Store decompositions for explicitly specified characters.
+        # All others are implicitly decomposed into themselves.
+        if decomp:
+            def from_hex(s): return int(s, 16)
+            if decomp.startswith('<'):
+                compatibility_decompositions[codepoint] = map(from_hex, decomp.split(' ')[1:])
+            else:
+                canonical_decompositions[codepoint] = map(from_hex, decomp.split(' '))
+
+    # Unassinged codepoints have category Cn, but they are not listed in UnicodeData.txt
+    general_category['Cn'] = [c for c in xrange(0, 0x110000) if c not in assigned_codepoints]
+
+    return (assigned_codepoints,
+            names,
+            general_category,
+            canonical_combining_class,
+            canonical_decompositions,
+            compatibility_decompositions)
+
+def parse_composition_exclusions(data):
+    """Extract the list of explicit exclusions from CompositionExclusions.txt"""
+    composition_exclusions = []
+
+    for line in data.split('\n'):
+        if not line or line.startswith('#'):
+            continue
+
+        codepoints = line.split('#')[0]
+
+        composition_exclusions.extend(parse_codepoint_range(codepoints))
+
+    return composition_exclusions
+
+def parse_hangul_syllable_types(data):
+    """Extract Hangul syllable type mapping from HangulSyllableType.txt"""
+    syllable_type = {}
+
+    for line in data.split('\n'):
+        if not line or line.startswith('#'):
+            continue
+
+        codepoints, st = line.split('#')[0].split(';')
+        st = st.strip()
+
+        if st not in syllable_type:
+            syllable_type[st] = []
+        syllable_type[st].extend(parse_codepoint_range(codepoints))
+
+    return syllable_type
+
+def parse_normalization_tests(data, assigned_codepoints):
+    """Extract test cases from NormalizationTest.txt"""
+    parts = data.split('@Part')[1:]
+    assert len(parts) == 4
+
+    test_parts = []
+    for part in parts:
+        test_part = []
+        for line in part.split('\n')[1:]:
+            if not line or line.startswith('#'):
+                continue
+            c = line.split(';')[0:5]
+            c = map(lambda c: map(lambda c: int(c, 16), c.split(' ')), c)
+            test_part.append(c)
+        test_parts.append(test_part)
+
+    # Part 1 is special, it implies that every codepoint *not* enumerated there is normalized into itself
+    additional_test = []
+    chars_in_part1 = set(map(lambda test: test[0][0], test_parts[1]))
+    for c in assigned_codepoints:
+        if c not in chars_in_part1:
+            additional_test.append(([c], [c], [c], [c], [c]))
+    test_parts.append(additional_test)
+
+    return [test for test_part in test_parts for test in test_part]
+
+def parse_property_list(data):
+    """Extract special properties from PropList.txt"""
+    properties = {}
+
+    for line in data.split('\n'):
+        if not line or line.startswith('#'):
+            continue
+
+        codepoints, prop = line.split('#')[0].split(';')
+        prop = prop.strip()
+
+        if prop not in properties:
+            properties[prop] = []
+        properties[prop].extend(parse_codepoint_range(codepoints))
+
+    return properties
+
+def parse_codepoint_range(cp_range):
+    """Covert codepoint range format used in UCD into a list of codepoints"""
+    parts = cp_range.strip().split('..')
+    assert len(parts) in [1, 2]
+
+    if len(parts) == 1:
+        s = int(parts[0], 16)
+        e = s
+    else:
+        s = int(parts[0], 16)
+        e = int(parts[1], 16)
+
+    return range(s, e + 1)
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+#
+# Unicode algorithms
+#
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+#
+# Compatibility Decomposition
+#
+
+def compatibility_decomposition(ucd, s):
+    """Produce a Compatibility decomposition (D65) of a character sequence s"""
+    decomposition = s
+    fully_decomposed = False
+
+    while not fully_decomposed:
+        new_decomposition = []
+        for c in decomposition:
+            D = None
+            if D is None: D = ucd.compatibility_decompositions.get(c)
+            if D is None: D = ucd.canonical_decompositions.get(c)
+            if D is None: D = ucd.jamo_decompositions.get(c)
+            if D is None: D = [c]
+            new_decomposition.extend(D)
+
+        if new_decomposition == decomposition:
+            fully_decomposed = True
+
+        decomposition = new_decomposition
+
+    return canonically_reordered(ucd, decomposition)
+
+#
+# Canonical Decomposition
+#
+
+def canonical_decomposition(ucd, s):
+    """Produce a Canonical decomposition (D68) of a character sequence s"""
+    decomposition = s
+    fully_decomposed = False
+
+    while not fully_decomposed:
+        new_decomposition = []
+        for c in decomposition:
+            D = None
+            if D is None: D = ucd.canonical_decompositions.get(c)
+            if D is None: D = ucd.jamo_decompositions.get(c)
+            if D is None: D = [c]
+            new_decomposition.extend(D)
+
+        if new_decomposition == decomposition:
+            fully_decomposed = True
+
+        decomposition = new_decomposition
+
+    return canonically_reordered(ucd, decomposition)
+
+#
+# Combining Classes
+#
+
+def ccc(ucd, c):
+    """Compute Combining class (D104) of c"""
+    return ucd.canonical_combining_class.get(c, 0)
+
+#
+# Starters
+#
+
+def is_starter(ucd, c):
+    """Check whether c is a Starter (D107)"""
+    return ccc(ucd, c) == 0
+
+#
+# Canonical Ordering Algorithm
+#
+
+def is_reorderable_pair(ucd, A, B):
+    """Check whether A and B are a Reorderable pair (D108)"""
+    ccc_A, ccc_B = ccc(ucd, A), ccc(ucd, B)
+    return (ccc_A > ccc_B) and (ccc_B > 0)
+
+def canonically_reordered(ucd, s):
+    """Apply the Canonical Ordering Algorithm (D109) to decomposed character sequence s"""
+    r = s[:]
+    for lim in xrange(len(r) - 1, 0, -1):
+        for i in xrange(lim):
+            if is_reorderable_pair(ucd, r[i], r[i + 1]):
+                r[i], r[i + 1] = r[i + 1], r[i]
+    return r
+
+#
+# Canonical Composition Algorithm
+#
+
+def is_singleton_decomposition(c, decomposition):
+    """Check whether c has a Singleton decomposition (D110)"""
+    return (len(decomposition) == 1) and (decomposition[0] != c)
+
+def is_expanding_canonical_decomposition(decomposition):
+    """Check whether decomposition is Expanding canonical decomposition (D110a)"""
+    return len(decomposition) > 1
+
+def is_starter_decomposition(ucd, c, decomposition):
+    """Check whether c has a Starter decomposition (D110b)"""
+    if is_expanding_canonical_decomposition(decomposition):
+        if is_starter(ucd, c) and is_starter(ucd, decomposition[0]):
+            return True
+    return False
+
+def is_non_starter_decomposition(ucd, c, decomposition):
+    """Check whether c has a Non-starter decomposition (D111)"""
+    if is_expanding_canonical_decomposition(decomposition):
+        return not is_starter_decomposition(ucd, c, decomposition)
+    return False
+
+def compute_full_composition_exclusions(ucd, composition_exclusions):
+    """Compute Full composition exclusions (D113)"""
+    full_composition_exclusions = composition_exclusions[:]
+
+    for c in ucd.canonical_decompositions:
+        decomposition = ucd.canonical_decompositions[c]
+
+        if is_singleton_decomposition(c, decomposition):
+            full_composition_exclusions.append(c)
+
+        if is_non_starter_decomposition(ucd, c, decomposition):
+            full_composition_exclusions.append(c)
+
+    return full_composition_exclusions
+
+def compute_primary_composites(ucd):
+    """Compute Primary composites (D114)"""
+    composites = (set(ucd.canonical_decompositions.keys()) \
+               | set(ucd.precomposed_hangul_syllables))    \
+               - set(ucd.full_composition_exclusions)
+
+    return {canonical_primary_decomposition(ucd, c): c
+            for c in composites}
+
+def canonical_primary_decomposition(ucd, c):
+    """Compute a two-codepoint decomposition of a Primary composite"""
+    if c in ucd.precomposed_hangul_syllables:
+        decomposition = canonical_jamo_decomposition_mapping(ucd, c)
+    else:
+        decomposition = ucd.canonical_decompositions.get(c)
+
+    assert len(decomposition) == 2
+    return tuple(decomposition)
+
+def blocked(ucd, s, A, C):
+    """Check whether C is Blocked (D115) from A in s"""
+    ccc_A = ccc(ucd, s[A])
+    ccc_C = ccc(ucd, s[C])
+    if ccc_A == 0:
+        for B in xrange(A + 1, C):
+            ccc_B = ccc(ucd, s[B])
+            if (ccc_B == 0) or (ccc_B >= ccc_C):
+                return True
+    return False
+
+def canonical_composition(ucd, s):
+    """Apply the Canonical Composition Algorithm (D117) to decomposed character sequence s"""
+    composition = s[:]
+
+    C = 0
+    while C < len(composition):
+        L = find_starter(ucd, composition, C)
+        if L is not None:
+            if not blocked(ucd, composition, L, C):
+                P = find_primary_composite(ucd, composition, L, C)
+                if P is not None:
+                    composition[L] = P
+                    del composition[C]
+                    continue
+        C += 1
+
+    return composition
+
+def find_starter(ucd, s, C):
+    """Try to locate the last preceding starter of C (D117: step R1)"""
+    for L in xrange(C - 1, -1, -1):
+        if is_starter(ucd, s[L]):
+            return L
+    else:
+        return None
+
+def find_primary_composite(ucd, s, L, C):
+    """Try to locate the last preceding starter of C (D117: step R2)"""
+    return ucd.primary_composites.get((s[L], s[C]))
+
+#
+# Definition of Normalization Forms
+#
+
+def nfd(ucd, s):
+    """Normalization Form D (D118)"""
+    return canonical_decomposition(ucd, s)
+
+def nfkd(ucd, s):
+    """Normalization Form KD (D119)"""
+    return compatibility_decomposition(ucd, s)
+
+def nfc(ucd, s):
+    """Normalization Form C (D120)"""
+    return canonical_composition(ucd, canonical_decomposition(ucd, s))
+
+def nfkc(ucd, s):
+    """Normalization Form KC (D121)"""
+    return canonical_composition(ucd, compatibility_decomposition(ucd, s))
+
+#
+# Hangul Syllable Decomposition
+#
+
+SBase = 0xAC00
+LBase,  VBase,  TBase  = 0x1100, 0x1161, 0x11A7
+LCount, VCount, TCount = 19, 21, 28
+NCount = VCount * TCount
+
+def is_LV_syllable(ucd, c):
+    """Check whether c is an LV_Syllable (D130)"""
+    return c in ucd.hangul_syllable_types['LV']
+
+def is_LVT_syllable(ucd, c):
+    """Check whether c is an LVT_Syllable (D131)"""
+    return c in ucd.hangul_syllable_types['LVT']
+
+def compute_precomposed_hangul_syllables(ucd):
+    """Compute a list of Precomposed Hangul syllables (D132)"""
+    return ucd.hangul_syllable_types['LV'] + ucd.hangul_syllable_types['LVT']
+
+def canonical_jamo_decomposition_mapping(ucd, c):
+    """Compute a canonical decomposition mapping for a Precomposed Hangul syllable"""
+    assert c in ucd.precomposed_hangul_syllables
+
+    SIndex = c - SBase
+
+    if is_LV_syllable(ucd, c):
+        LIndex = SIndex / NCount
+        VIndex = (SIndex % NCount) / TCount
+        return [LBase + LIndex, VBase + VIndex]
+
+    if is_LVT_syllable(ucd, c):
+        LVIndex = (SIndex / TCount) * TCount
+        TIndex = SIndex % TCount
+        return [SBase + LVIndex, TBase + TIndex]
+
+def canonical_jamo_decomposition(ucd, c):
+    """Fully decompose a Precomposed Hangul syllable"""
+    assert c in ucd.precomposed_hangul_syllables
+
+    SIndex = c - SBase
+
+    LIndex = SIndex / NCount
+    VIndex = (SIndex % NCount) / TCount
+    TIndex = SIndex % TCount
+
+    if TIndex > 0:
+        return [LBase + LIndex, VBase + VIndex, TBase + TIndex]
+    else:
+        return [LBase + LIndex, VBase + VIndex]
+
+def compute_jamo_decompositions(ucd):
+    """Compute full decompositions for all precomposed Hangul syllables"""
+    return {c: canonical_jamo_decomposition(ucd, c)
+            for c in ucd.precomposed_hangul_syllables}
+
+#
+# Normalization tests
+#
+
+def run_normalization_tests(ucd, normalization_tests):
+    """Run normalization self-tests from NormalizationTest.txt"""
+    for c1, c2, c3, c4, c5 in normalization_tests:
+        # NFC
+        assert c2 == nfc(ucd, c1)
+        assert c2 == nfc(ucd, c2)
+        assert c2 == nfc(ucd, c3)
+        assert c4 == nfc(ucd, c4)
+        assert c4 == nfc(ucd, c5)
+        # NFD
+        assert c3 == nfd(ucd, c1)
+        assert c3 == nfd(ucd, c2)
+        assert c3 == nfd(ucd, c3)
+        assert c5 == nfd(ucd, c4)
+        assert c5 == nfd(ucd, c5)
+        # NFKC
+        assert c4 == nfkc(ucd, c1)
+        assert c4 == nfkc(ucd, c2)
+        assert c4 == nfkc(ucd, c3)
+        assert c4 == nfkc(ucd, c4)
+        assert c4 == nfkc(ucd, c5)
+        # NFKD
+        assert c5 == nfkd(ucd, c1)
+        assert c5 == nfkd(ucd, c2)
+        assert c5 == nfkd(ucd, c3)
+        assert c5 == nfkd(ucd, c4)
+        assert c5 == nfkd(ucd, c5)
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+#
+# Importing Unicode data
+#
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+class UCD:
+    """A collection of processed Unicode Character Data along with some cached derived data"""
+    pass
+
+def prepare_unicode_character_data(version):
+    UnicodeData           = retrieve_ucd('UnicodeData.txt',           version)
+    HangulSyllableType    = retrieve_ucd('HangulSyllableType.txt',    version)
+    CompositionExclusions = retrieve_ucd('CompositionExclusions.txt', version)
+    PropList              = retrieve_ucd('PropList.txt',              version)
+    NormalizationTest     = retrieve_ucd('NormalizationTest.txt',     version)
+
+    report_status('Parsing Unicode Character Data...')
+
+    [assigned_codepoints, names, general_category, canonical_combining_class,
+     canonical_decompositions, compatibility_decompositions] = parse_unicode_data(UnicodeData)
+
+    hangul_syllable_types = parse_hangul_syllable_types(HangulSyllableType)
+    composition_exclusions = parse_composition_exclusions(CompositionExclusions)
+    properties = parse_property_list(PropList)
+    normalization_tests = parse_normalization_tests(NormalizationTest, assigned_codepoints)
+
+    report_status('Precomputing derived properties and decompositions...')
+
+    ucd = UCD()
+
+    ucd.compatibility_decompositions = compatibility_decompositions
+    ucd.canonical_decompositions     = canonical_decompositions
+    ucd.canonical_combining_class    = canonical_combining_class
+
+    ucd.hangul_syllable_types        = hangul_syllable_types
+    ucd.precomposed_hangul_syllables = compute_precomposed_hangul_syllables(ucd)
+    ucd.jamo_decompositions          = compute_jamo_decompositions(ucd)
+
+    ucd.full_composition_exclusions  = compute_full_composition_exclusions(ucd, composition_exclusions)
+    ucd.primary_composites           = compute_primary_composites(ucd)
+
+    ucd.general_category = general_category
+    ucd.properties       = properties
+    ucd.version          = version
+    ucd.names            = names
+
+    report_status('Running normalization self-tests...')
+    run_normalization_tests(ucd, normalization_tests)
+
+    return ucd
+
+def get_unicode_character_data(version):
+    report_status('')
+
+    filename = relative_to_script('unicode-' + version + '-ucd.pickled')
+
+    if os.path.isfile(filename):
+        report_status('Loading cached Unicode Character Data (%s)...' % version)
+        f = open(filename, 'rb')
+        ucd = pickle.load(f)
+        f.close()
+    else:
+        report_status('Retrieving Unicode Character Data (%s)...' % version)
+        ucd = prepare_unicode_character_data(version)
+        f = open(filename, 'wb')
+        pickle.dump(ucd, f, 1)
+        f.close()
+
+    report_status('Ready!')
+    return ucd
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+#
+# Computing sets of characters allowed in Sash identifiers
+#
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+class SashCharacterSet:
+    """A collection of character sets for Sash"""
+    pass
+
+def compute_character_sets(ucd):
+    report_status('\nComputing character sets (%s)...' % ucd.version)
+
+    # Word identifiers loosely follow the definition of C identifiers tailored for Unicode:
+    # an identifier starts with a 'letter' followed by 'decimal digits' and 'underscores'.
+
+    ID_Start = set(ucd.general_category['Lu']       # uppercase letters
+             +     ucd.general_category['Ll']       # lowercase letters
+             +     ucd.general_category['Lt']       # titlecase letters
+             +     ucd.general_category['Lm']       # modifier letters
+             +     ucd.general_category['Lo']       # other letters
+             +     ucd.general_category['Nl'])      # letter numbers
+
+    ID_Continue = set(list(ID_Start)
+                +     ucd.general_category['Mn']    # non-spacing combining modifiers
+                +     ucd.general_category['Mc']    # spacing combining modifiers
+                +     ucd.general_category['Nd']    # decimal digits
+                +     ucd.general_category['Pc'])   # punctuation connectors
+
+    # As an extension, Sash also allows to use 'Zero Width Joiner' and 'Zero Width Non-Joiner'
+    # format control characters in identifiers. After the first letter.
+
+    ID_Continue = ID_Continue.union([0x200C, 0x200D])
+
+    # Mark identifiers are constructed in a fashion similar to words, but they consist of symbols.
+    # Notable difference is that enclosing modifiers are also allowed.
+
+    Sym_Start = set(ucd.general_category['Pd']      # dash punctuation
+              +     ucd.general_category['Po']      # other punctuation
+              +     ucd.general_category['Sc']      # currency symbols
+              +     ucd.general_category['Sm']      # mathematical symbols
+              +     ucd.general_category['So'])     # other symbols
+
+    Sym_Continue = set(list(Sym_Start)
+                 +     ucd.general_category['Mc']   # spacing combining modifiers
+                 +     ucd.general_category['Mn']   # non-spacing combining modifiers
+                 +     ucd.general_category['Me'])  # enclosing modifiers
+
+    # Quote identifiers are peculiar one-character identifiers of Sash. They do not have any
+    # continuations and do not allow usage of combining modifiers after them.
+
+    Punctuation = set(ucd.general_category['Ps']    # opening punctuation
+                +     ucd.general_category['Pe']    # closing punctuation
+                +     ucd.general_category['Pi']    # initial quotes
+                +     ucd.general_category['Pf'])   # final quotes
+
+    # This set of modifiers is actually standalone. These are *not* valid continuations of quote
+    # identifiers, and it is not a subset of the previous set. Thus, it is handled a bit specially.
+
+    P_Modifiers = set(ucd.general_category['Mc']    # spacing combining modifiers
+                +     ucd.general_category['Mn']    # non-spacing combining modifiers
+                +     ucd.general_category['Me'])   # enclosing modifiers
+
+    # Stability policy requires that once a sequence of characters is considered an identifier, it
+    # will be considered an identifier in all further versions of Unicode. A sequence can cease
+    # being valid when a character changes its general category. The stability is achieved by using
+    # 'grandfathered characters' to reinclude once-an-identifier-but-now-not characters into
+    # ID_{Start,Continue} sets. The standard explicitly defines two properties for this purpose:
+    # Other_ID_{Start,Continue}.
+    #
+    # Unicode Annex #31 does not cover Sash-specific symbol and punctuation identifiers.
+    # We use the same approach for them by explicitly enumerating the additional sets.
+
+    Other_ID_Start     = ucd.properties['Other_ID_Start']
+    Other_ID_Continue  = ucd.properties['Other_ID_Continue']
+    Other_Sym_Start    = set() # empty, as of Unicode 8.0.0
+    Other_Sym_Continue = set() # empty, as of Unicode 8.0.0
+    Other_Punctuation  = set() # empty, as of Unicode 8.0.0
+    Other_P_Modifiers  = set() # empty, as of Unicode 8.0.0
+
+    ID_Start     = ID_Start    .union(Other_ID_Start)
+    ID_Continue  = ID_Continue .union(Other_ID_Start, Other_ID_Continue)
+    Sym_Start    = Sym_Start   .union(Other_Sym_Start)
+    Sym_Continue = Sym_Continue.union(Other_Sym_Start, Other_Sym_Continue)
+    Punctuation  = Punctuation .union(Other_Punctuation)
+    P_Modifiers  = P_Modifiers .union(Other_P_Modifiers)
+
+    # Also, it is obvious that special cases of one identifier kind should be excluded from others.
+    # This is also required to guarantee stability: if some character was considered a letter once,
+    # it must continue being a letter in identifiers. For example, if some character C had a general
+    # category Lu and now it is Sm, then it should be added to Other_ID_Start and *not allowed* to
+    # go into Sym_Start. Vice versa, if a Pe character SUDDENLY becomes a Po then it must be added
+    # into Other_Punctuation *and* excluded from new Sym_Start. Note that such exclusion *does not*
+    # remove the characters allowed by the previous Unicode standard from their assigned sets.
+
+    ID_Start     = ID_Start    .difference(Other_Sym_Start, Other_Sym_Continue, Other_Punctuation)
+    ID_Continue  = ID_Continue .difference(Other_Sym_Start, Other_Sym_Continue, Other_Punctuation)
+    Sym_Start    = Sym_Start   .difference(Other_ID_Start, Other_ID_Continue, Other_Punctuation)
+    Sym_Continue = Sym_Continue.difference(Other_ID_Start, Other_ID_Continue, Other_Punctuation)
+    Punctuation  = Punctuation .difference(Other_ID_Start, Other_ID_Continue, Other_Sym_Start, Other_Sym_Continue)
+
+    # Sash explicitly defines ASCII character sets for identifiers. We should exclude the ASCII
+    # range from all identifier kinds and populate it manually.
+
+    def irange(low, high):
+        return range(low, high + 1)
+
+    ASCII_range = irange(0x0000, 0x007F)
+
+    ASCII_ID_Start = set(irange(0x0041, 0x005A)     # uppercase English letters
+                   +     irange(0x0061, 0x007A)     # lowercase English letters
+                   +     [0x005F])                  # the underscore character
+
+    ASCII_ID_Continue = set(list(ASCII_ID_Start)
+                      +     irange(0x0030, 0x0039)) # decimal digits (ASCII)
+
+    ASCII_Sym_Start = set([0x0021, 0x0024, 0x0025,  # ! $ % & * + - . / < = > ? @ ^ | ~
+           0x0026, 0x002A, 0x002B, 0x002D, 0x002E,  # Sash does not allow singular dots in symbols,
+           0x002F, 0x003C, 0x003D, 0x003E, 0x003F,  # but this check is hardwired into the scanner.
+           0x0040, 0x005E, 0x007C, 0x007E])
+
+    ASCII_Sym_Continue = set(list(ASCII_Sym_Start))
+
+    ASCII_Punctuation = set()
+
+    ASCII_P_Modifiers = set()
+
+    ID_Start     = ID_Start    .difference(ASCII_range).union(ASCII_ID_Start)
+    ID_Continue  = ID_Continue .difference(ASCII_range).union(ASCII_ID_Continue)
+
+    Sym_Start    = Sym_Start   .difference(ASCII_range).union(ASCII_Sym_Start)
+    Sym_Continue = Sym_Continue.difference(ASCII_range).union(ASCII_Sym_Continue)
+
+    Punctuation  = Punctuation .difference(ASCII_range).union(ASCII_Punctuation)
+    P_Modifiers  = P_Modifiers .difference(ASCII_range).union(ASCII_P_Modifiers)
+
+    # There is one final constraint on identifiers. Sash normalizes identifiers into NFKC to remove
+    # visual ambiguity and reduce security risks (as noted in Unicode Annex #31). Given this, it is
+    # highly desirable that the allowed character sets are closed over NFKC transformation. That is,
+    # if X is a valid identifier of some kind, NFKC(X) should also be an identifier of the same kind
+
+    def closed_over_nfkc(ID_Start, ID_Continue):
+        XID_Start, XID_Continue = set(), set()
+
+        for c in ID_Continue:
+            n = nfkc(ucd, [c])
+            if set(n) <= ID_Continue:
+                XID_Continue.add(c)
+
+        for c in ID_Start:
+            n = nfkc(ucd, [c])
+            if (n[0] in ID_Start) and (set(n[1:]) <= XID_Continue):
+                XID_Start.add(c)
+
+        return XID_Start, XID_Continue
+
+    Word_Start, Word_Continue = closed_over_nfkc(ID_Start,  ID_Continue)
+    Mark_Start, Mark_Continue = closed_over_nfkc(Sym_Start, Sym_Continue)
+    Quote_Start, _            = closed_over_nfkc(Punctuation, set())
+    Quote_Continue            = P_Modifiers
+
+    report_status('Verifying character sets...')
+
+    # Now we do some self-checks to guarantee some properties of the character sets
+    # that the scanner is interesterd in
+    #
+    # First of all, ensure that the sets are non-empty:
+
+    assert Word_Start
+    assert Word_Continue
+    assert Mark_Start
+    assert Mark_Continue
+    assert Quote_Start
+
+    # Then confirm the intuitive notion of that starter sets are subsets of their continuations:
+
+    assert Word_Start <= Word_Continue
+    assert Mark_Start <= Mark_Continue
+
+    # Now we need to ensure that the following grammar of identifiers is unambiguous:
+    #
+    #   <word>  ::= Word_Start Word_Continue*
+    #   <mark>  ::= Mark_Start Mark_Continue*
+    #   <quote> ::= Quote_Start
+    #
+    # To prove this it is sufficient to show that neither nonterminal can be a prefix of others.
+    # Our sets are constructed in such way that the starter sets are non-intersecting, which is
+    # sufficient to deny the existence of prefixes.
+
+    assert not (Word_Start  & Mark_Start)
+    assert not (Word_Start  & Quote_Start)
+    assert not (Quote_Start & Mark_Start)
+
+    # We also need to be sure that the grammar does not conflict with identifier boundary rules
+    # of Sash. That is, <word>, <mark>, and <quote> must not be suffixes of each other.
+    #
+    # Our sets are constructed in such way that the starter sets are subsets of continuations,
+    # thus we can deny suffixes by showing that no starter is a continuation of a different kind.
+
+    assert not (Word_Start  & Mark_Continue)
+    assert not (Mark_Start  & Word_Continue)
+    assert not (Quote_Start & Mark_Continue)
+    assert not (Quote_Start & Word_Continue)
+
+    report_status('Complete!')
+
+    cs = SashCharacterSet()
+    cs.Word_Start     = Word_Start
+    cs.Word_Continue  = Word_Continue
+    cs.Mark_Start     = Mark_Start
+    cs.Mark_Continue  = Mark_Continue
+    cs.Quote_Start    = Quote_Start
+    cs.Quote_Continue = Quote_Continue
+    cs.ucd            = ucd
+    return cs
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+#
+# Printing out Unicode tables
+#
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+def emit_unicode_tables(cs):
+    report_status('\nEmitting...')
+    emit_header()
+    emit_unicode_version(cs.ucd.version)
+    emit_sash_identifiers(cs)
+
+def emit_header():
+    print_data("""\
+// Copyright (c) 2015, ilammy
+//
+// Licensed under MIT license (see LICENSE file in the root directory).
+// This file may be copied, distributed, and modified only in accordance
+// with the terms specified by this license.
+
+//
+// THIS FILE IS AUTOMATICALLY GENERATED. DO NOT EDIT IT DIRECTLY. PLEASE.
+//
+
+//! Unicode support for Sash implementation.
+//!
+//! This module contains definitions of various Unicode character properties, algorithms, etc.
+//! which are used internally by the implementation. It is intended to be a minimal sufficient
+//! subset of some proper full Unicode support library, so as to consume minimum amount of space.
+//! Full Unicode support requires multiple megabyte-sized lookup tables which are not actually
+//! needed in limited contexts such as programming language implementations.
+""")
+
+def emit_unicode_version(version):
+    major, minor, patch = map(int, version.split('.'))
+    print_data("""
+/// Version of the Unicode Standard this module is based upon.
+pub const UNICODE_VERSION: (u8, u8, u8) = (%d, %d, %d);
+""" % (major, minor, patch))
+
+def emit_sash_identifiers(cs):
+    categories = compute_categories(cs)
+
+    print_data("""
+/// Definitions of Sash identifier character sets.
+///
+/// Sash uses three distinct _kinds_ of identifiers. They are considered separate tokens from
+/// the lexical standpoint, but are otherwise equivalent.
+///
+/// - **Word** identifiers loosely follow the definition of C identifiers tailored for Unicode:
+///   an identifier starts with a 'letter' followed by 'decimal digits' and 'underscores'.
+///   These are intended for general usage.
+///
+/// - **Mark** identifiers are constructed in a fashion similar to words, but they consist of
+///   miscellaneous symbols. These are intended for operators of various sorts (mostly prefix,
+///   postfix, and infix).
+///
+/// - **Quote** identifiers are supplementary one-character identifiers constructed from braces
+///   and quotes. These are intended for outfix (wrapping) operators.
+///
+/// This module contains definitons of character sets allowed in each of these identifier kinds.
+pub mod sash_identifiers {
+    use std::fmt;
+    use std::ops;
+
+    /// Unsigned integer substrate of `Category` flags.
+    type CategoryFlags = u8;
+
+    /// Category of Sash identifier characters.
+    ///
+    /// This is a union of one or more atomic character categories (see module constants).
+    /// Compound categories are constructed with the binary OR operator. For example, word
+    /// identifier characters are written as `WORD_START | WORD_CONTINUE`.
+    ///
+    /// A character can be tested for categories like this:
+    ///
+    /// ```
+    /// assert!(category_of('a').is(WORD_START | WORD_CONTINUE));
+    /// ```
+    #[derive(Clone, Copy, Eq, PartialEq, Hash)]
+    pub struct Category {
+        flags: CategoryFlags
+    }
+
+    /// Initial characters of word identifiers (letters).
+    pub const WORD_START: Category = Category { flags: 0b00000001 };
+
+    /// Initial characters of mark identifiers (symbols).
+    pub const MARK_START: Category = Category { flags: 0b00000010 };
+
+    /// Initial characters of quote identifiers (braces and quotes).
+    pub const QUOTE_START: Category = Category { flags: 0b00000100 };
+
+    /// Subsequent characters of word identifiers (letters, digits, combining characters).
+    pub const WORD_CONTINUE: Category = Category { flags: 0b00001000 };
+
+    /// Subsequent characters of mark identifiers (symbols and combining characters).
+    pub const MARK_CONTINUE: Category = Category { flags: 0b00010000 };
+
+    /// Invalid subsequent characters of quote identifiers (combining characters).
+    ///
+    /// This category is used only in error recovery code paths.
+    pub const QUOTE_CONTINUE: Category = Category { flags: 0b00100000 };
+
+    /// Null character category.
+    const OTHER: Category = Category { flags: 0 };
+
+    /// A mask covering all atomic category flags.
+    const CATEGORY_MASK: CategoryFlags = 0b00111111;
+
+    impl Category {
+        /// Safely construct a `Category` from raw flags.
+        fn new(flags: CategoryFlags) -> Category {
+            assert!((flags & !CATEGORY_MASK) == 0);
+            Category { flags: flags }
+        }
+
+        /// Check whether this category includes any of the other ones.
+        pub fn is(self, other: Category) -> bool {
+            (self.flags & other.flags) != 0
+        }
+    }
+
+    impl ops::BitOr for Category {
+        type Output = Category;
+
+        fn bitor(self, other: Category) -> Category {
+            Category { flags: self.flags | other.flags }
+        }
+    }
+
+    impl fmt::Debug for Category {
+        fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+            let mut s = String::new();
+
+            if *self == OTHER {
+                s.push_str("OTHER")
+            } else {
+                let mut first = true;
+                for &(cat, str) in &[
+                    (WORD_START, "WORD_START"),
+                    (MARK_START, "MARK_START"),
+                    (QUOTE_START, "QUOTE_START"),
+                    (WORD_CONTINUE, "WORD_CONTINUE"),
+                    (MARK_CONTINUE, "MARK_CONTINUE"),
+                    (QUOTE_CONTINUE, "QUOTE_CONTINUE")
+                ] {
+                    if self.is(cat) {
+                        if !first {
+                            s.push_str(" | ");
+                        }
+                        first = false;
+                        s.push_str(str);
+                    }
+                }
+            }
+
+            fmt.write_str(s.as_ref())
+        }
+    }
+
+    /// Get the `Category` of a given character `c`.
+    pub fn category_of(c: char) -> Category {
+        // Fast path for the common case of ASCII identifiers
+        if c <= '\u{7F}' {
+            Category::new(CATEGORY_TABLE_ASCII[c as usize])
+        } else {
+            category_of_unicode(c)
+        }
+    }
+
+    /// Slow path of `category_of()` which uses binary search over the large Unicode table
+    /// to support non-ASCII characters.
+    fn category_of_unicode(c: char) -> Category {
+        use std::cmp::Ordering;
+
+        let r = CATEGORY_TABLE_FULL.binary_search_by(|&(low, high, _)| {
+            if (low <= c) && (c <= high) {
+                Ordering::Equal
+            } else if high < c {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }).ok();
+
+        return Category::new(match r {
+            Some(index) => CATEGORY_TABLE_FULL[index].2,
+            None        => 0
+        });
+    }
+
+    /// Lookup table for `category_of()` containting data for the ASCII character range.
+    const CATEGORY_TABLE_ASCII: &'static [CategoryFlags; 128] = &[
+""")
+    emit_category_table_ascii(categories)
+    print_data("""
+    ];
+
+    /// Lookup table for `category_of()` containing data for the full Unicode range.
+    const CATEGORY_TABLE_FULL: &'static [(char, char, CategoryFlags)] = &[
+""")
+    emit_category_table_unicode(categories)
+    print_data("""
+    ];
+}
+""")
+
+def compute_categories(cs):
+    """Convert character sets into explicit category list"""
+    def category_for_character(c):
+        cat = 0
+        if c in cs.Word_Start:     cat |= 0b00000001
+        if c in cs.Mark_Start:     cat |= 0b00000010
+        if c in cs.Quote_Start:    cat |= 0b00000100
+        if c in cs.Word_Continue:  cat |= 0b00001000
+        if c in cs.Mark_Continue:  cat |= 0b00010000
+        if c in cs.Quote_Continue: cat |= 0b00100000
+        return cat
+
+    return map(category_for_character, xrange(0, 0x110000))
+
+def emit_category_table_ascii(categories):
+    cats = categories[0x00:0x80]
+
+    def render(cat):
+        return '%d' % cat
+
+    print_data(split_into_lines(map(render, cats), separator=',', indent=8, max_length=99))
+
+def emit_category_table_unicode(categories):
+    table = convert_to_bsearch_table(categories)
+    table = filter(lambda range: range[2] != 0, table)
+
+    def render(range):
+        low, high, cat = range
+        return "('\\u{%04X}', '\\u{%04X}', %2d)" % (low, high, cat)
+
+    print_data(split_into_lines(map(render, table), separator=',', indent=8, max_length=99))
+
+def split_into_lines(seq, separator, indent, max_length):
+    max_length -= indent
+    indent = ' ' * indent
+
+    lines = []
+    line = ""
+    for s in seq:
+        new_line = line + s + separator
+        if len(new_line) < max_length:
+            line = new_line + ' '
+        else:
+            lines.append(indent + line)
+            line = s + separator + ' '
+    lines.append(indent + line)
+
+    return '\n'.join(map(lambda s: s.rstrip(), lines))
+
+def convert_to_bsearch_table(categories):
+    table = []
+
+    start, end, current = None, None, None
+
+    for c, cat in enumerate(categories):
+        if start is None:
+            start, end, current = c, c, cat
+        elif cat == current:
+            end = c
+        else:
+            table.append((start, end, current))
+            start, end, current = c, c, cat
+
+    if start is not None:
+        table.append((start, end, current))
+
+    return table
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+#
+# The actual body of the script
+#
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+
+latest_version = query_latest_unicode_version()
+report_status('Latest Unicode Standard version is "' + latest_version + '"')
+
+if commandline_args.compare:
+    # Comparing two identifier sets, producing no output
+    version_old, version_new = commandline_args.compare
+    if version_old == 'latest': version_old = latest_version
+    if version_new == 'latest': version_new = latest_version
+
+    if version_old == version_new:
+        report_status('')
+        report_status(('After careful examination I have found versions "%s" and "%s" to be equal.'
+                     + ' I am pretty sure they will produce equivalent identifier sets.')
+                     % (version_old, version_new))
+        sys.exit()
+
+    ucd_old = get_unicode_character_data(version_old)
+    ucd_new = get_unicode_character_data(version_new)
+
+    cs_old = compute_character_sets(ucd_old)
+    cs_new = compute_character_sets(ucd_new)
+
+    report_status('')
+
+    perfect_sets = True
+    for old, new, g_set in [(cs_old.Word_Start,    cs_new.Word_Start,    'Other_ID_Start'),
+                            (cs_old.Word_Continue, cs_new.Word_Continue, 'Other_ID_Continue'),
+                            (cs_old.Mark_Start,    cs_new.Mark_Start,    'Other_Sym_Start'),
+                            (cs_old.Mark_Continue, cs_new.Mark_Continue, 'Other_Sym_Continue'),
+                            (cs_old.Quote_Start,   cs_new.Quote_Start,   'Other_Punctuation')]:
+        diff = old - new
+        if diff:
+            if perfect_sets:
+                report_status('Some characters have changed their properties and need to be'
+                            + ' grandfathered in order to preserve identifier stability between'
+                            + ' versions.')
+                perfect_sets = False
+
+            report_status('\nConsider adding these characters to %s:' % g_set)
+            for c in sorted(diff):
+                report_status('  U+%04X %s' % (c, ucd_new.names.get(c, '')))
+
+    if perfect_sets:
+        report_status('All character sets are fine.')
+else:
+    # Generating tables for a given version
+    if commandline_args.version == 'latest':
+        version = latest_version
+    else:
+        version = commandline_args.version[0]
+
+    ucd = get_unicode_character_data(version)
+
+    cs = compute_character_sets(ucd)
+
+    emit_unicode_tables(cs)
