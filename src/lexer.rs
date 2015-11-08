@@ -1406,12 +1406,11 @@ impl<'a> StringScanner<'a> {
                     self.report.error(Span::new(old_prev_pos, self.prev_pos),
                         "Incorrect identifier character");
                 }
-                // The same is true for invalid Unicode escapes, just report and carry on scanning
-                Err(IncorrectUnicodeEscape) => {
-                    self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                        "Incorrect identifier character");
-                }
-                // For ASCII escapes it's also true, just with a different message
+                // The same is true for invalid Unicode escapes, just carry on scanning.
+                // Don't report the error, the user already knows about malformed Unicode
+                // which is obviously incorrect identifier character
+                Err(IncorrectUnicodeEscape) => { }
+                // For ASCII escapes it's also true, but we need a message
                 Err(AsciiUnicodeEscape) => {
                     self.report.error(Span::new(old_prev_pos, self.prev_pos),
                         "ASCII is not allowed in identifier Unicode fallback");
@@ -1466,12 +1465,11 @@ impl<'a> StringScanner<'a> {
                     self.report.error(Span::new(old_prev_pos, self.prev_pos),
                         "Incorrect identifier character");
                 }
-                // The same is true for invalid Unicode escapes, just report and carry on scanning
-                Err(IncorrectUnicodeEscape) => {
-                    self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                        "Incorrect identifier character");
-                }
-                // For ASCII escapes it's also true, just with a different message
+                // The same is true for invalid Unicode escapes, just carry on scanning.
+                // Don't report the error, the user already knows about malformed Unicode
+                // which is obviously incorrect identifier character
+                Err(IncorrectUnicodeEscape) => { }
+                // For ASCII escapes it's also true, but we need a message
                 Err(AsciiUnicodeEscape) => {
                     self.report.error(Span::new(old_prev_pos, self.prev_pos),
                         "ASCII is not allowed in identifier Unicode fallback");
@@ -1534,12 +1532,11 @@ impl<'a> StringScanner<'a> {
                             "Incorrect identifier character");
                     }
                 }
-                // The same is true for invalid Unicode escapes, just report and carry on scanning
-                Err(IncorrectUnicodeEscape) => {
-                    self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                        "Incorrect identifier character");
-                }
-                // For ASCII escapes it's also true, just with a different message
+                // The same is true for invalid Unicode escapes, just carry on scanning.
+                // Don't report the error, the user already knows about malformed Unicode
+                // which is obviously incorrect identifier character
+                Err(IncorrectUnicodeEscape) => { }
+                // For ASCII escapes it's also true, but we need a message
                 Err(AsciiUnicodeEscape) => {
                     self.report.error(Span::new(old_prev_pos, self.prev_pos),
                         "ASCII is not allowed in identifier Unicode fallback");
@@ -3129,12 +3126,10 @@ mod tests {
             ScannerTestSlice(r" ",                                          Token::Whitespace),
             ScannerTestSlice(r"\u{Some}\u{Invalid}\u{Stuff}",               Token::Unrecognized),
             ScannerTestSlice(r"_123",                                       Token::Identifier),
-        ], &[ Span::new(  4,   6), Span::new(  2,   6), Span::new( 11,  19), Span::new( 11,  19),
-              Span::new( 21,  35), Span::new( 21,  35), Span::new( 41,  65), Span::new( 39,  65),
+        ], &[ Span::new(  4,   6), Span::new( 11,  19), Span::new( 21,  35), Span::new( 41,  65),
               Span::new( 68,  76), Span::new( 76,  84), Span::new( 68,  84), Span::new( 86,  94),
-              Span::new( 86,  94), Span::new( 95, 103), Span::new( 95, 103), Span::new(103, 111),
-              Span::new(103, 111), Span::new(120, 137), Span::new(120, 137), Span::new(141, 152),
-              Span::new(139, 152), Span::new(161, 167), Span::new(169, 178), Span::new(180, 187),
+              Span::new( 95, 103), Span::new(103, 111), Span::new(120, 137), Span::new(120, 137),
+              Span::new(141, 152), Span::new(161, 167), Span::new(169, 178), Span::new(180, 187),
               Span::new(159, 187), Span::new(193, 199), Span::new(201, 210), Span::new(212, 219),
               Span::new(191, 219),
          ], &[]);
@@ -3192,8 +3187,8 @@ mod tests {
               Span::new( 29,  43), Span::new( 44,  61), Span::new( 62,  63), Span::new( 67,  69),
               Span::new( 70,  71), Span::new( 74,  75), Span::new( 76,  89), Span::new( 90,  97),
               Span::new(104, 105), Span::new(107, 110), Span::new(111, 112), Span::new(116, 117),
-              Span::new(118, 119), Span::new(126, 127), Span::new(132, 134), Span::new(138, 140),
-              Span::new(143, 146), Span::new(147, 150), Span::new(152, 155), Span::new(157, 160),
+              Span::new(132, 134), Span::new(138, 140), Span::new(143, 146), Span::new(147, 150),
+              Span::new(152, 155), Span::new(157, 160),
         ], &[]);
     }
 
@@ -3220,11 +3215,10 @@ mod tests {
             ScannerTestSlice(r"+\uD900\uDDDD",                              Token::Identifier),
             ScannerTestSlice(r"_\u{9999999999999999}_",                     Token::Identifier),
         ], &[ Span::new(  1,   9), Span::new( 11,  19), Span::new( 20,  21), Span::new( 25,  26),
-              Span::new( 27,  28), Span::new( 35,  36), Span::new( 41,  49), Span::new( 53,  61),
-              Span::new( 64,  72), Span::new( 73,  81), Span::new( 83,  91), Span::new( 93, 101),
-              Span::new(105, 107), Span::new(103, 107), Span::new(112, 135), Span::new(110, 135),
-              Span::new(139, 143), Span::new(137, 143), Span::new(137, 143), Span::new(145, 149),
-              Span::new(143, 149), Span::new(143, 149), Span::new(150, 170), Span::new(150, 170),
+              Span::new( 41,  49), Span::new( 53,  61), Span::new( 64,  72), Span::new( 73,  81),
+              Span::new( 83,  91), Span::new( 93, 101), Span::new(105, 107), Span::new(112, 135),
+              Span::new(139, 143), Span::new(137, 143), Span::new(145, 149), Span::new(143, 149),
+              Span::new(150, 170),
         ], &[]);
     }
 
