@@ -545,7 +545,7 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        // TODO: attempt to scan over a suffix
+        self.scan_optional_type_suffix();
 
         // Some late check for floating-point base. We do not support binary literals for floats.
         if !integer && (base != 10) {
@@ -699,7 +699,7 @@ impl<'a> StringScanner<'a> {
             return Token::Unrecognized;
         }
 
-        // TODO: type suffix
+        self.scan_optional_type_suffix();
 
         return Token::Character;
     }
@@ -736,7 +736,7 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        // TODO: type suffix
+        self.scan_optional_type_suffix();
 
         return Token::String;
     }
@@ -1283,7 +1283,7 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        // TODO: type suffix
+        self.scan_optional_type_suffix();
 
         return Token::RawString;
     }
@@ -1561,6 +1561,52 @@ impl<'a> StringScanner<'a> {
         }
 
         return Token::Identifier;
+    }
+
+    /// Maybe scan over an optional type suffix of literal tokens
+    fn scan_optional_type_suffix(&mut self) {
+        use unicode::sash_identifiers;
+        use unicode::sash_identifiers::{WORD_START, MARK_START, QUOTE_START,
+            WORD_CONTINUE, MARK_CONTINUE, QUOTE_CONTINUE};
+        use self::IdentifierSpecials::*;
+
+        let old_prev_pos = self.prev_pos;
+        match self.scan_one_character_of_identifier() {
+            // Special case for raw string literals immediately following some
+            // other literal. Their 'r' should not be considered a type suffix.
+            Ok('r') if (self.cur == Some('"')) || (self.cur == Some('#')) => {
+                self.unread('r', old_prev_pos);
+            }
+            // A character has been correctly scanned over. Scan over the type suffix if it looks
+            // like a word, or else put the character back at where we took it and simply go out.
+            Ok(c) => {
+                let category = sash_identifiers::category_of(c);
+
+                if category.is(WORD_START) {
+                    self.scan_identifier_word(c);
+                } else {
+                    self.unread(c, old_prev_pos);
+                }
+            }
+            // Some incorrect escape sequence has been scanned over. This is certainly not going
+            // to be a word, so we should put the character back. But we do not know the specific
+            // code point when we scan over an invalid Unicode escape or an ASCII Unicode escape.
+            // Yet we must unread() something invalid in identifiers in order to have the next
+            // token to be Token::Unrecognized. We use an arbitrary contstant U+0000 for this.
+            Err(IncorrectUnicodeEscape) | Err(AsciiUnicodeEscape) => {
+                const INVALID_IDENTIFIER_CHARACTER: char = '\u{0}';
+
+                assert!(sash_identifiers::category_of(INVALID_IDENTIFIER_CHARACTER).is(
+                    WORD_START | MARK_START | QUOTE_START |
+                    WORD_CONTINUE | MARK_CONTINUE | QUOTE_CONTINUE
+                ) == false);
+
+                self.unread(INVALID_IDENTIFIER_CHARACTER, old_prev_pos);
+            }
+            // A terminator of a word identifer is ahead (it has not been scanned over yet).
+            // Just go out, there is nothing interesting for us here.
+            Err(Dot) | Err(Terminator) | Err(Digit) => { }
+        }
     }
 }
 
@@ -1841,11 +1887,73 @@ mod tests {
 
     // TODO: combined errors
 
-    // TODO: type suffixes
-    //   correct suffixes
-    //   0g42 parses as 0 + g42, not as incorrect radix spec
-    //   0b22 is incorrect digits
-    //   0_b22 is (lexically) correct suffix
+    #[test]
+    fn integer_type_suffixes() {
+        check(&[
+            // ASCII suffixes
+            ScannerTestSlice("1foo",                    Token::Integer),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("42i32",                   Token::Integer),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            // Only words can be suffixes
+            ScannerTestSlice("42",                      Token::Integer),
+            ScannerTestSlice("+",                       Token::Identifier),
+            ScannerTestSlice("i32",                     Token::Identifier),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            // Leading zero is not special
+            ScannerTestSlice("0yFFF",                   Token::Integer),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("0xBREAD",                 Token::Integer),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("0_o133",                  Token::Integer),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            // Unicode suffixes
+            ScannerTestSlice("983\u{7206}\u{767A}",     Token::Integer),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("983\\u{7206}\\u{767A}",   Token::Integer),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            // This is binary literal, not zero with suffix
+            ScannerTestSlice("0b234",                   Token::Integer),
+        ], &[ Span::new(71, 72), Span::new(72, 73), Span::new(73, 74) ], &[]);
+    }
+
+    #[test]
+    fn integer_type_suffixes_invalid() {
+        check(&[
+            // Inner invalid characters are treated as constituents of suffixes,
+            // just as in regular identifiers. Note that underscores are treated
+            // as a part of the number.
+            ScannerTestSlice("45f\\u{D800}9",           Token::Integer),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("951_x\u{0}__",            Token::Integer),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("0000\\u430\\u443",        Token::Integer),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("9_x\\u{78}__",            Token::Integer),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("542_o\\x10",              Token::Integer),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            // However, if a literal is immediately followed by an invalid characters
+            // they are not scanned over in anticipation of suffix. They are instantly
+            // treated as Token::Unrecognized following the literal
+            ScannerTestSlice("0000",                    Token::Integer),
+            ScannerTestSlice("\u{0}\u{0}",              Token::Unrecognized),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("951__",                   Token::Integer),
+            ScannerTestSlice("\u{0}",                   Token::Unrecognized),
+            ScannerTestSlice("__",                      Token::Identifier),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("9__",                     Token::Integer),
+            ScannerTestSlice("\\u{DAAA}\\u{78}",        Token::Unrecognized),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("542_",                    Token::Integer),
+            ScannerTestSlice("\\",                      Token::Unrecognized),
+            ScannerTestSlice("x10",                     Token::Identifier),
+        ], &[ Span::new( 3, 11), Span::new(18, 19), Span::new(28, 31), Span::new(33, 36),
+              Span::new(40, 46), Span::new(54, 55), Span::new(63, 65), Span::new(71, 72),
+              Span::new(78, 86), Span::new(78, 92), Span::new(97, 98)
+        ], &[]);
+    }
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     // Floats
@@ -1972,7 +2080,64 @@ mod tests {
 
     // TODO: combined errors
 
-    // TODO: type suffixes
+    #[test]
+    fn float_type_suffixes() {
+        check(&[
+            // ASCII suffixes
+            ScannerTestSlice("1.0zog",                      Token::Float),
+            ScannerTestSlice(" ",                           Token::Whitespace),
+            ScannerTestSlice("0e+10f32",                    Token::Float),
+            ScannerTestSlice(" ",                           Token::Whitespace),
+            // Only words can be suffixes
+            ScannerTestSlice("56e",                         Token::Integer),
+            ScannerTestSlice("=",                           Token::Identifier),
+            ScannerTestSlice("_f64",                        Token::Identifier),
+            ScannerTestSlice(" ",                           Token::Whitespace),
+            // Unicode suffixes
+            ScannerTestSlice("0.0_\u{7206}\u{767A}",        Token::Float),
+            ScannerTestSlice(" ",                           Token::Whitespace),
+            ScannerTestSlice("9.6E-7_8\\u{7206}\\u{767A}",  Token::Float),
+            ScannerTestSlice(" ",                           Token::Whitespace),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn float_type_suffixes_invalid() {
+        check(&[
+            // Inner invalid characters are treated as constituents of suffixes,
+            // just as in regular identifiers. Note that underscores are treated
+            // as a part of the number.
+            ScannerTestSlice("4.5f\\u{D800}9",          Token::Float),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("9e0_x\u{0}__",            Token::Float),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("0.000\\u{430\\u443}",     Token::Float),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("9_e\\u{78}__",            Token::Integer),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("50_e+2_o\\\\10",          Token::Float),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            // However, if a literal is immediately followed by an invalid characters
+            // they are not scanned over in anticipation of suffix. They are instantly
+            // treated as Token::Unrecognized following the literal
+            ScannerTestSlice("00.0",                    Token::Float),
+            ScannerTestSlice("\u{0}\u{1}",              Token::Unrecognized),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("9.1_e+5_",                Token::Float),
+            ScannerTestSlice("\u{5}",                   Token::Unrecognized),
+            ScannerTestSlice("__",                      Token::Identifier),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("9E1_",                    Token::Float),
+            ScannerTestSlice("\\u{DEAD}\\u{31}",        Token::Unrecognized),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("5.0_",                    Token::Float),
+            ScannerTestSlice("\\",                      Token::Unrecognized),
+            ScannerTestSlice("e10",                     Token::Identifier),
+        ], &[ Span::new(  4,  12), Span::new( 19,  20), Span::new( 34,  34), Span::new( 36,  36),
+              Span::new( 44,  50), Span::new( 61,  62), Span::new( 62,  63), Span::new( 70,  72),
+              Span::new( 81,  82), Span::new( 89,  97), Span::new( 89, 103), Span::new(108, 109)
+        ], &[]);
+    }
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     // Characters
@@ -2301,7 +2466,87 @@ mod tests {
         ], &[]);
     }
 
-    // TODO: type suffixes
+    #[test]
+    fn character_type_suffixes() {
+        check(&[
+            // Suffixes are words
+            ScannerTestSlice("'x'wide",                 Token::Character),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("'\t'ASCII",               Token::Character),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("'\\t'ASCII",              Token::Character),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("'\u{3435}'_",             Token::Character),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            // And only words, symbols are not suffixes
+            ScannerTestSlice("'='",                     Token::Character),
+            ScannerTestSlice("=",                       Token::Identifier),
+            ScannerTestSlice("'='",                     Token::Character),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            // Unicode suffixes
+            ScannerTestSlice("'\u{1F74}'\u{1F74}",      Token::Character),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("'\\u{1F74}'\\u{1F74}",    Token::Character),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn character_type_suffixes_invalid() {
+        check(&[
+            // Inner invalid characters are treated as constituents of suffixes,
+            // just as in regular identifiers.
+            ScannerTestSlice("'\\u{EEEE}'\\u{47f}\\u{DAAA}",    Token::Character),
+            ScannerTestSlice(" ",                               Token::Whitespace),
+            ScannerTestSlice("'\\u{EEEE}'b\\u6Fx",              Token::Character),
+            ScannerTestSlice(" ",                               Token::Whitespace),
+            // However, if a literal is immediately followed by an invalid characters
+            // they are not scanned over in anticipation of suffix. They are instantly
+            // treated as Token::Unrecognized following the literal
+            ScannerTestSlice("'0'",                     Token::Character),
+            ScannerTestSlice("\\u0\\u1",                Token::Unrecognized),
+            ScannerTestSlice("\t",                      Token::Whitespace),
+            ScannerTestSlice("'\\u{F000}'",             Token::Character),
+            ScannerTestSlice("\\u{F000}",               Token::Unrecognized),
+            ScannerTestSlice("\t",                      Token::Whitespace),
+            ScannerTestSlice("'f'",                     Token::Character),
+            ScannerTestSlice("\\",                      Token::Unrecognized),
+            ScannerTestSlice("x",                       Token::Identifier),
+        ], &[ Span::new(17, 25), Span::new(39, 41), Span::new(37, 41), Span::new(48, 49),
+              Span::new(51, 52), Span::new(46, 52), Span::new(63, 71), Span::new(75, 76),
+        ], &[]);
+    }
+
+    #[test]
+    fn character_type_suffixes_after_invalid() {
+        check(&[
+            // Type suffixes are scanned over just fine after invalid characters
+            ScannerTestSlice("'\\u{DADA}'u32",          Token::Character),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("''cc",                    Token::Character),
+            ScannerTestSlice("''",                      Token::Character),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("'\\u0'_\\u0",             Token::Character),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("'\\5'q",                  Token::Character),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("'\r'foo",                 Token::Character),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("'some'suffix",            Token::Character),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            // But missing quotes are something else
+            ScannerTestSlice("'foo",                    Token::Unrecognized),
+            ScannerTestSlice("\n",                      Token::Whitespace),
+            ScannerTestSlice("c32",                     Token::Identifier),
+            ScannerTestSlice("\t",                      Token::Whitespace),
+            ScannerTestSlice("'bar",                    Token::Unrecognized),
+            ScannerTestSlice("\r\n",                    Token::Whitespace),
+            ScannerTestSlice("'baz",                    Token::Unrecognized),
+        ], &[ Span::new(  1,  9), Span::new( 14, 16), Span::new( 18, 20), Span::new( 24, 25),
+              Span::new( 29, 30), Span::new( 27, 30), Span::new( 32, 34), Span::new( 38, 39),
+              Span::new( 44, 50), Span::new( 57, 61), Span::new( 66, 70), Span::new( 72, 76),
+        ], &[]);
+    }
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     // Strings
@@ -2489,7 +2734,74 @@ mod tests {
 
     // TODO: more tests
 
-    // TODO: type suffixes
+    #[test]
+    fn string_type_suffixes() {
+        check(&[
+            // Suffixes are words
+            ScannerTestSlice("\"x\"wide",               Token::String),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("\"\t\"ASCII",             Token::String),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("\"\\t\"ASCII",            Token::String),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("\"\u{3435}\"_",           Token::String),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            // And only words, symbols are not suffixes
+            ScannerTestSlice("\"=\"",                   Token::String),
+            ScannerTestSlice("==",                      Token::Identifier),
+            ScannerTestSlice("\"=\"",                   Token::String),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            // Unicode suffixes
+            ScannerTestSlice("\"\u{1F74}\"\u{1F74}",    Token::String),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("\"\\u{1F74}\"\\u{1F74}",  Token::String),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn string_type_suffixes_invalid() {
+        check(&[
+            // Inner invalid characters are treated as constituents of suffixes,
+            // just as in regular identifiers.
+            ScannerTestSlice("\"fofo\"\\u{47f}\\u{DAAA}",   Token::String),
+            ScannerTestSlice("\"\"b\\u4Fx",                 Token::String),
+            ScannerTestSlice(" ",                           Token::Whitespace),
+            // However, if a literal is immediately followed by an invalid characters
+            // they are not scanned over in anticipation of suffix. They are instantly
+            // treated as Token::Unrecognized following the literal
+            ScannerTestSlice("\"\\\"\"",                Token::String),
+            ScannerTestSlice("\\u3F",                   Token::Unrecognized),
+            ScannerTestSlice("\n",                      Token::Whitespace),
+            ScannerTestSlice("\"\\u{F000}\\u{D800}\"",  Token::String),
+            ScannerTestSlice("\\u{F000}",               Token::Unrecognized),
+            ScannerTestSlice("\t",                      Token::Whitespace),
+            ScannerTestSlice("\"foo\"",                 Token::String),
+            ScannerTestSlice("\\",                      Token::Unrecognized),
+            ScannerTestSlice("U900",                    Token::Identifier),
+        ], &[ Span::new(13, 21), Span::new(26, 28), Span::new(24, 28), Span::new(36, 38),
+              Span::new(34, 38), Span::new(48, 56), Span::new(57, 65), Span::new(71, 72),
+        ], &[]);
+    }
+
+    #[test]
+    fn string_type_suffixes_after_invalid() {
+        check(&[
+            // Type suffixes are scanned over just fine after invalid strings
+            ScannerTestSlice("\"\\u0\"_\\u0",           Token::String),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("\"\\5\"q",                Token::String),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("\"\r\"foo",               Token::String),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("\"\\x\"zog",              Token::String),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("\"\\x4500\"__",           Token::String),
+            // We aren't able to test missing quotes as they are detected only at EOF
+        ], &[ Span::new( 3,  4), Span::new( 8,  9), Span::new( 6,  9), Span::new(11, 13),
+              Span::new(17, 18), Span::new(26, 26), Span::new(34, 38),
+        ], &[]);
+    }
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     // Raw strings
@@ -2614,7 +2926,95 @@ mod tests {
     //       Like, unrecognized starts of raw strings, "r#####foo"?
     //       However, maybe these should be parsed as invalid multipart identifiers.
 
-    // TODO: type suffixes
+    #[test]
+    fn raw_string_type_suffixes() {
+        check(&[
+            // Suffixes are words
+            ScannerTestSlice("r\"x\"wide",              Token::RawString),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("r##\"\t\"##ASCII",        Token::RawString),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("r\"\\t\"ASCII",           Token::RawString),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("r#\"\u{3435}\"#_",        Token::RawString),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            // And only words, symbols are not suffixes
+            ScannerTestSlice("r\"=\"",                  Token::RawString),
+            ScannerTestSlice("==",                      Token::Identifier),
+            ScannerTestSlice("r\"=\"",                  Token::RawString),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            // Unicode suffixes
+            ScannerTestSlice("r\"\u{1F74}\"\u{1F74}",   Token::RawString),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("r\"\\u{1F74}\"\\u{1F74}", Token::RawString),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            // Suffixes (like other tokens) are scanned over geedily, but there
+            // is an exception for raw strings. In sequences /r"/ and /r#/, the
+            // 'r' character is never considered a type suffix. However, it is
+            // true only for the *first* 'r'. Everything else is scanned over
+            // greedily as usual.
+            ScannerTestSlice("r\"\"",                   Token::RawString),
+            ScannerTestSlice("r\"\"rr",                 Token::RawString),
+            ScannerTestSlice("\"\"",                    Token::String),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("r#\"1\"#",                Token::RawString),
+            ScannerTestSlice("r##\"x\"##",              Token::RawString),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("rawr",                    Token::Identifier),
+            ScannerTestSlice("\"123\"",                 Token::String),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("r\"x\"boar",              Token::RawString),
+            ScannerTestSlice("#",                       Token::Hash),
+            ScannerTestSlice("\"x\"",                   Token::String),
+            ScannerTestSlice("#",                       Token::Hash),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn raw_string_type_suffixes_invalid() {
+        check(&[
+            // Inner invalid characters are treated as constituents of suffixes,
+            // just as in regular identifiers.
+            ScannerTestSlice("r\"fofo\"\\u{47f}\\u{DAAA}",  Token::RawString),
+            ScannerTestSlice(" ",                           Token::Whitespace),
+            ScannerTestSlice("r#\"\"#b\\u4Fx",              Token::RawString),
+            ScannerTestSlice(" ",                           Token::Whitespace),
+            // However, if a literal is immediately followed by an invalid characters
+            // they are not scanned over in anticipation of suffix. They are instantly
+            // treated as Token::Unrecognized following the literal
+            ScannerTestSlice("r\"\\\"",                     Token::RawString),
+            ScannerTestSlice("\\u3F",                       Token::Unrecognized),
+            ScannerTestSlice("\n",                          Token::Whitespace),
+            ScannerTestSlice("r##\"\\u{F000}\\u{D800}\"##", Token::RawString),
+            ScannerTestSlice("\\u{F000}",                   Token::Unrecognized),
+            ScannerTestSlice("\t",                          Token::Whitespace),
+            ScannerTestSlice("r\"foo\"",                    Token::RawString),
+            ScannerTestSlice("\\",                          Token::Unrecognized),
+            ScannerTestSlice("U900",                        Token::Identifier),
+            ScannerTestSlice("\n",                          Token::Whitespace),
+            // Specifically for raw strings: \u{72} is not valid starter for them
+            ScannerTestSlice("r#\"\"#",                     Token::RawString),
+            ScannerTestSlice("\\u{72}",                     Token::Unrecognized),
+            ScannerTestSlice("#",                           Token::Hash),
+            ScannerTestSlice("\"4\"",                       Token::String),
+            ScannerTestSlice("#",                           Token::Hash),
+        ], &[ Span::new(14, 22), Span::new(31, 33), Span::new(29, 33), Span::new(41, 43),
+              Span::new(39, 43), Span::new(67, 75), Span::new(82, 83), Span::new(93, 99),
+        ], &[]);
+    }
+
+    #[test]
+    fn raw_string_type_suffixes_after_invalid() {
+        check(&[
+            // Type suffixes are scanned over just fine after invalid strings
+            ScannerTestSlice("r\"\\u0\"_\\u0",          Token::RawString),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("r##\"\\5\"##q",           Token::RawString),
+            ScannerTestSlice(" ",                       Token::Whitespace),
+            ScannerTestSlice("r\"\r\"foo",              Token::RawString),
+            // We aren't able to test missing quotes as they are detected only at EOF
+        ], &[ Span::new( 9, 10), Span::new( 7, 10), Span::new(24, 25) ], &[]);
+    }
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     // Identifiers
