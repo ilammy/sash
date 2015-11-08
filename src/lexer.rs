@@ -4,7 +4,6 @@
 // This file may be copied, distributed, and modified only in accordance
 // with the terms specified by this license.
 
-use std::mem;
 use std::char;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -172,9 +171,6 @@ pub struct StringScanner<'a> {
 
     // Temporaries for the token currently being scanned
 
-    /// The token to be returned
-    tok: Token,
-
     /// First character of `tok`
     start: usize,
 
@@ -193,12 +189,7 @@ impl<'a> Scanner<'a> for StringScanner<'a> {
     }
 
     fn next_token(&mut self) -> ScannedToken {
-        self.next();
-
-        ScannedToken {
-            tok: mem::replace(&mut self.tok, Token::EOF),
-            span: Span::new(self.start, self.end),
-        }
+        self.next()
     }
 }
 
@@ -261,7 +252,7 @@ impl<'a> StringScanner<'a> {
         let mut scanner = StringScanner {
             buf: s,
             cur: None, pos: 0, prev_pos: 0,
-            tok: Token::EOF, start: 0, end: 0,
+            start: 0, end: 0,
             report: reporter,
         };
         scanner.read();
@@ -299,66 +290,64 @@ impl<'a> StringScanner<'a> {
         self.buf[self.pos..].chars().nth(1)
     }
 
-    /// Scan the next token from the stream and set `tok`, `span`, `errors`
-    fn next(&mut self) {
+    /// Scan the next token from the stream
+    fn next(&mut self) -> ScannedToken {
         if self.at_eof() {
-            self.tok = Token::EOF;
-            self.start = self.pos;
-            self.end = self.pos;
-            return;
+            return ScannedToken {
+                tok: Token::EOF,
+                span: Span::new(self.pos, self.pos)
+            };
         }
-
-        self.tok = Token::EOF;
 
         self.start = self.prev_pos;
 
-        match self.cur.unwrap() {
+        let tok = match self.cur.unwrap() {
             ' ' | '\t' | '\n' | '\r' => {
-                self.scan_whitespace();
+                self.scan_whitespace()
             }
             '/' if self.peek() == Some('/') => {
-                self.scan_line_comment();
+                self.scan_line_comment()
             }
             '/' if self.peek() == Some('*') => {
-                self.scan_block_comment();
+                self.scan_block_comment()
             }
-            '(' => { self.read(); self.tok = Token::Lparen; }
-            ')' => { self.read(); self.tok = Token::Rparen; }
-            '[' => { self.read(); self.tok = Token::Lbrack; }
-            ']' => { self.read(); self.tok = Token::Rbrack; }
-            '{' => { self.read(); self.tok = Token::Lbrace; }
-            '}' => { self.read(); self.tok = Token::Rbrace; }
-            ',' => { self.read(); self.tok = Token::Comma; }
-            ';' => { self.read(); self.tok = Token::Semicolon; }
+            '(' => { self.read(); Token::Lparen }
+            ')' => { self.read(); Token::Rparen }
+            '[' => { self.read(); Token::Lbrack }
+            ']' => { self.read(); Token::Rbrack }
+            '{' => { self.read(); Token::Lbrace }
+            '}' => { self.read(); Token::Rbrace }
+            ',' => { self.read(); Token::Comma }
+            ';' => { self.read(); Token::Semicolon }
             '.' if self.peek() != Some('.') => {
                 self.read();
-                self.tok = Token::Dot;
+                Token::Dot
             }
             ':' => {
                 self.read();
                 match self.cur {
                     Some(':') => {
                         self.read();
-                        self.tok = Token::Dualcolon;
+                        Token::Dualcolon
                     }
                     _ => {
-                        self.tok = Token::Colon;
+                        Token::Colon
                     }
                 }
             }
             '0'...'9' => {
-                self.scan_number();
+                self.scan_number()
             }
             '\'' => {
-                self.scan_character_literal();
+                self.scan_character_literal()
             }
             '"' => {
-                self.scan_string();
+                self.scan_string()
             }
             'r' => {
                 match self.scan_raw_string_leaders() {
                     Some(hashes) => {
-                        self.scan_raw_string(hashes);
+                        self.scan_raw_string(hashes)
                     }
                     None => {
                         panic!("possibly invalid multipart identifier");
@@ -366,28 +355,33 @@ impl<'a> StringScanner<'a> {
                 }
             }
             _ => {
-                self.scan_identifier();
+                self.scan_identifier()
             }
-        }
+        };
 
         self.end = self.prev_pos;
 
-        assert!(self.tok != Token::EOF);
+        assert!(tok != Token::EOF);
+
+        return ScannedToken {
+            tok: tok,
+            span: Span::new(self.start, self.end)
+        };
     }
 
     /// Scan over a sequence of whitespace
-    fn scan_whitespace(&mut self) {
+    fn scan_whitespace(&mut self) -> Token {
         while !self.at_eof() {
             match self.cur.unwrap() {
                 ' ' | '\t' | '\n' | '\r' => { self.read(); }
                 _                        => { break; }
             }
         }
-        self.tok = Token::Whitespace;
+        return Token::Whitespace;
     }
 
     /// Scan over a line comment
-    fn scan_line_comment(&mut self) {
+    fn scan_line_comment(&mut self) -> Token {
         assert!(self.cur == Some('/') && self.peek() == Some('/'));
         self.read();
         self.read();
@@ -417,11 +411,12 @@ impl<'a> StringScanner<'a> {
                 _ => { self.read(); }
             }
         }
-        self.tok = Token::Comment;
+
+        return Token::Comment;
     }
 
     /// Scan a block comment.
-    fn scan_block_comment(&mut self) {
+    fn scan_block_comment(&mut self) -> Token {
         assert!(self.cur == Some('/') && self.peek() == Some('*'));
         self.read();
         self.read();
@@ -457,19 +452,19 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        self.tok = Token::Comment;
-
         if nesting_level > 0 {
             self.report.error(Span::new(self.start, self.pos),
                 "Unexpected end of file while reading a block comment. \
                  Please look for the missing block comment closure */");
 
-            self.tok = Token::Unrecognized;
+            return Token::Unrecognized;
         }
+
+        return Token::Comment;
     }
 
     /// Scan over any number
-    fn scan_number(&mut self) {
+    fn scan_number(&mut self) -> Token {
         // Okay, first of all, numbers start with a decimal digit
         assert!(StringScanner::is_digit(self.cur.unwrap(), 10));
 
@@ -499,7 +494,7 @@ impl<'a> StringScanner<'a> {
         }
 
         // According to what we have seen up to this point, it is integer
-        self.tok = Token::Integer;
+        let mut integer = true;
 
         // Though, a dot after an integer may mark a floating-point literal...
         if self.cur == Some('.') {
@@ -509,12 +504,12 @@ impl<'a> StringScanner<'a> {
             if StringScanner::is_digit(c, 10) || c == '_' {
                 self.read();
                 self.scan_float_fractional_part();
-                self.tok = Token::Float;
+                integer = false;
             } else {
                 // Else it is just an integer followed by some dot. While dots can form identifiers
                 // (like '...'), type suffixes are defined as word-identifiers, which dots aren't.
                 // Thus we just go out with the suffixless integer we have already scanned over.
-                return;
+                return Token::Integer;
             }
         }
 
@@ -527,7 +522,7 @@ impl<'a> StringScanner<'a> {
                 // An 'e' followed by a number is an exponent
                 self.read();
                 self.scan_float_exponent();
-                self.tok = Token::Float;
+                integer = false;
             } else if c == '+' || c == '-' {
                 // An 'e' followed by a sign which is followed by a number is an exponent.
                 // If the sign is not followed by a number then we've seen just a suffix "e"
@@ -538,7 +533,7 @@ impl<'a> StringScanner<'a> {
                     self.read();
                     self.read();
                     self.scan_float_exponent();
-                    self.tok = Token::Float;
+                    integer = false;
                 }
             } else {
                 // Not an exponent, just some (invalid) type suffix starting with 'e'.
@@ -549,10 +544,12 @@ impl<'a> StringScanner<'a> {
         // TODO: attempt to scan over a suffix
 
         // Some late check for floating-point base. We do not support binary literals for floats.
-        if (self.tok == Token::Float) && (base != 10) {
+        if !integer && (base != 10) {
             self.report.error(Span::new(self.start, self.prev_pos),
                 "Float number must be decimal");
         }
+
+        return if integer { Token::Integer } else { Token::Float };
     }
 
     /// Scan over a sequence of digits
@@ -628,7 +625,7 @@ impl<'a> StringScanner<'a> {
     }
 
     /// Scan over a single character literal
-    fn scan_character_literal(&mut self) {
+    fn scan_character_literal(&mut self) -> Token {
         use self::CharacterSpecials::*;
 
         // A character literal is a single quote...
@@ -694,17 +691,17 @@ impl<'a> StringScanner<'a> {
         if !terminated {
             self.report.error(Span::new(self.start, self.prev_pos),
                     "Missing closing single quote.");
-            self.tok = Token::Unrecognized;
-            return;
+
+            return Token::Unrecognized;
         }
 
         // TODO: type suffix
 
-        self.tok = Token::Character;
+        return Token::Character;
     }
 
     /// Scan over a string literal
-    fn scan_string(&mut self) {
+    fn scan_string(&mut self) -> Token {
         use self::StringSpecials::*;
 
         // Strings start with a double quote...
@@ -729,15 +726,15 @@ impl<'a> StringScanner<'a> {
                     // For strings there is only one way to get here: end of the stream
                     self.report.error(Span::new(self.start, self.pos),
                         "Missing closing double quote.");
-                    self.tok = Token::Unrecognized;
-                    return;
+
+                    return Token::Unrecognized;
                 }
             }
         }
 
         // TODO: type suffix
 
-        self.tok = Token::String;
+        return Token::String;
     }
 
     /// Scan over a single character or escape sequence for a character literal. Returns an Ok
@@ -1006,7 +1003,6 @@ impl<'a> StringScanner<'a> {
         match self.cur {
             // \u... is a universal marker of a Unicode escape
             Some('u') => {
-                let old_prev_pos = self.prev_pos;
                 return match self.scan_escape_unicode(None) {
                     // Do not allow ASCII characters to be written as Unicode escapes.
                     //
@@ -1242,7 +1238,7 @@ impl<'a> StringScanner<'a> {
     }
 
     /// Scan over a raw string delimited by `hash_count` hashes
-    fn scan_raw_string(&mut self, hash_count: u32) {
+    fn scan_raw_string(&mut self, hash_count: u32) -> Token {
         assert!(self.cur == Some('"'));
         self.read();
 
@@ -1250,7 +1246,6 @@ impl<'a> StringScanner<'a> {
             match self.cur {
                 Some('"') => {
                     if self.scan_raw_string_trailers(hash_count) {
-                        self.tok = Token::RawString;
                         break;
                     }
                 }
@@ -1265,13 +1260,15 @@ impl<'a> StringScanner<'a> {
                     self.report.error(Span::new(self.start, self.pos),
                         "Unexpected EOF. Expected end of raw string");
                     // TODO: output expected number of hashes
-                    self.tok = Token::Unrecognized;
-                    return;
+
+                    return Token::Unrecognized;
                 }
             }
         }
 
         // TODO: type suffix
+
+        return Token::RawString;
     }
 
     /// Scan over raw string trailing sequence `"#...#`, stopping either at the first non-`#`
@@ -1296,7 +1293,7 @@ impl<'a> StringScanner<'a> {
     }
 
     /// Scan over an identifier
-    fn scan_identifier(&mut self) {
+    fn scan_identifier(&mut self) -> Token {
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, MARK_START, QUOTE_START};
         use self::IdentifierSpecials::*;
@@ -1309,32 +1306,29 @@ impl<'a> StringScanner<'a> {
 
                 // If it's a valid starter then dispatch to kind-specific loops
                 if category.is(WORD_START) {
-                    self.scan_identifier_word(c);
-                    return;
+                    return self.scan_identifier_word(c);
                 }
                 if category.is(MARK_START) {
-                    self.scan_identifier_mark(c);
-                    return;
+                    return self.scan_identifier_mark(c);
                 }
                 if category.is(QUOTE_START) {
-                    self.scan_identifier_quote(c);
-                    return;
+                    return self.scan_identifier_quote(c);
                 }
 
                 // Otherwise, skip over this incomprehensible character sequence until we see
                 // something meaninful. We *can* go here as scan_identifier() is called by the
                 // catch-all branch of the next() method.
-                self.scan_unrecognized(old_prev_pos);
+                return self.scan_unrecognized(old_prev_pos);
             }
             // Ignore invalid Unicode escapes as well
             Err(IncorrectUnicodeEscape) | Err(AsciiUnicodeEscape) => {
-                self.scan_unrecognized(old_prev_pos);
+                return self.scan_unrecognized(old_prev_pos);
             }
             // In this context, a dot must be followed by another dot, meaning a mark identifier.
             // Token::Dot should have been handled by next() before.
             Err(Dot) => {
                 assert!(self.peek() == Some('.'));
-                self.scan_identifier_mark('.');
+                return self.scan_identifier_mark('.');
             }
             // next() should have also handled these cases, so we will never get here.
             Err(Terminator) | Err(Digit) => { unreachable!(); }
@@ -1342,7 +1336,7 @@ impl<'a> StringScanner<'a> {
     }
 
     /// Scan over a sequence of unrecognized characters
-    fn scan_unrecognized(&mut self, start: usize) {
+    fn scan_unrecognized(&mut self, start: usize) -> Token {
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, MARK_START, QUOTE_START};
         use self::IdentifierSpecials::*;
@@ -1370,11 +1364,11 @@ impl<'a> StringScanner<'a> {
         self.report.error(Span::new(start, self.prev_pos),
             "Incomprehensible character sequence");
 
-        self.tok = Token::Unrecognized;
+        return Token::Unrecognized;
     }
 
     /// Scan over a word identifier
-    fn scan_identifier_word(&mut self, initial: char) {
+    fn scan_identifier_word(&mut self, initial: char) -> Token {
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, WORD_CONTINUE, MARK_START, QUOTE_START};
         use self::IdentifierSpecials::*;
@@ -1429,11 +1423,11 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        self.tok = Token::Identifier;
+        return Token::Identifier;
     }
 
     /// Scan over a mark identifier
-    fn scan_identifier_mark(&mut self, initial: char) {
+    fn scan_identifier_mark(&mut self, initial: char) -> Token {
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, MARK_START, MARK_CONTINUE, QUOTE_START};
         use self::IdentifierSpecials::*;
@@ -1494,11 +1488,11 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        self.tok = Token::Identifier;
+        return Token::Identifier;
     }
 
     /// Scan over a quote identifier
-    fn scan_identifier_quote(&mut self, initial: char) {
+    fn scan_identifier_quote(&mut self, initial: char) -> Token {
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, MARK_START, QUOTE_START, QUOTE_CONTINUE};
         use self::IdentifierSpecials::*;
@@ -1549,7 +1543,7 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        self.tok = Token::Identifier;
+        return Token::Identifier;
     }
 }
 
