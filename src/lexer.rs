@@ -55,6 +55,9 @@ pub enum Token {
     /// Semicolon `;`
     Semicolon,
 
+    /// Hash `#`
+    Hash,
+
     /// Integer literal
     Integer,
 
@@ -319,6 +322,7 @@ impl<'a> StringScanner<'a> {
             '}' => { self.read(); Token::Rbrace }
             ',' => { self.read(); Token::Comma }
             ';' => { self.read(); Token::Semicolon }
+            '#' => { self.read(); Token::Hash }
             '.' if self.peek() != Some('.') => {
                 self.read();
                 Token::Dot
@@ -850,7 +854,7 @@ impl<'a> StringScanner<'a> {
             // including the whitespace and the end of character stream.
             Some('(') | Some(')') | Some('[') | Some(']') | Some('{') | Some('}') | Some(',') |
             Some(';') | Some(':') | Some('"') | Some(' ') | Some('\'') | Some('\n') | Some('\r') |
-            Some('\t') | None => {
+            Some('\t') | Some('#') | None => {
                 return Err(Terminator);
             }
             // There are a couple of exceptions, though. Comments are delimited by characters from
@@ -1722,6 +1726,8 @@ mod tests {
             ScannerTestSlice(";",  Token::Semicolon),
             ScannerTestSlice(",",  Token::Comma),
             ScannerTestSlice(",",  Token::Comma),
+            ScannerTestSlice("#",  Token::Hash),
+            ScannerTestSlice("#",  Token::Hash),
         ], &[], &[]);
     }
 
