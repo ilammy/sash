@@ -354,7 +354,7 @@ impl<'a> StringScanner<'a> {
                         self.scan_raw_string(hashes)
                     }
                     None => {
-                        panic!("possibly invalid multipart identifier");
+                        self.scan_identifier_word('r')
                     }
                 }
             }
@@ -1225,20 +1225,32 @@ impl<'a> StringScanner<'a> {
 
     /// Scan over raw string leading sequence `r#...#"`, stopping at the first non-leading
     /// character. Returns Some number of hashes scanned over in case of success, or None
-    /// if the string did not look like a raw string leading sequence.
+    /// if the string did not look like a raw string leading sequence. Scanner state is
+    /// set to the opening quote in case of success. If the character string does not look
+    /// like a raw string, scanning is stopped immediately behind the `r` character.
     fn scan_raw_string_leaders(&mut self) -> Option<u32> {
         assert!(self.cur == Some('r'));
         self.read();
 
+        // Yes. Unfortunately, we need infinite lookahead to handle this case.
+        // Well, whatever, raw strings have a context-sensitive grammar.
+
         let mut hash_count = 0;
-        while !self.at_eof() {
-            match self.cur.unwrap() {
+        for cur in self.buf[self.prev_pos..].chars() {
+            match cur {
                 '#' => { hash_count += 1; }
-                '"' => { return Some(hash_count); }
-                 _  => { break; }
+                '"' => {
+                    // Keep this an equivalent of `for 0..hash_count { self.read(); }`
+                    self.prev_pos += hash_count as usize;
+                    self.pos += hash_count as usize;
+                    self.cur = Some('"');
+
+                    return Some(hash_count);
+                }
+                _  => { break; }
             }
-            self.read();
         }
+
         return None;
     }
 
@@ -3265,6 +3277,27 @@ mod tests {
               Span::new(37, 39), Span::new(42, 45), Span::new(48, 51), Span::new(54, 57),
               Span::new(57, 60), Span::new(60, 63),
         ], &[]);
+    }
+
+    #[test]
+    fn identifier_special_raw_strings() {
+        check(&[
+            // Raw strings start with an 'r' which is a valid starter of word identifiers.
+            // We must not confuse them.
+            ScannerTestSlice("r\"awr\"",        Token::RawString),
+            ScannerTestSlice(" ",               Token::Whitespace),
+            ScannerTestSlice("ra",              Token::Identifier),
+            ScannerTestSlice("\"wr\"",          Token::String),
+            ScannerTestSlice(" ",               Token::Whitespace),
+            ScannerTestSlice("raaaaa",          Token::Identifier),
+            ScannerTestSlice("#",               Token::Hash),
+            ScannerTestSlice("#",               Token::Hash),
+            ScannerTestSlice("\"wr\"",          Token::String),
+            ScannerTestSlice("#",               Token::Hash),
+            ScannerTestSlice("#",               Token::Hash),
+            ScannerTestSlice(" ",               Token::Whitespace),
+            ScannerTestSlice("r#\"awr\"#",      Token::RawString),
+        ], &[], &[]);
     }
 
     // TODO: boundary tests between all token types
