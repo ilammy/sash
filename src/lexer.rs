@@ -79,6 +79,9 @@ pub enum Token {
     /// An implicit symbol
     ImplicitSymbol,
 
+    /// An explicit symbol
+    ExplicitSymbol,
+
     /// Marker token denoting invalid character sequences
     Unrecognized,
 }
@@ -228,6 +231,18 @@ enum StringSpecials {
     UnexpectedTerminator,
 }
 
+/// Indicator values used in scanning explicit symbols. These are returned by
+/// `StringScanner::scan_one_character_of_symbol()` when the next character
+/// is not a regular character of a symbol.
+enum SymbolSpecials {
+    /// Literal backquote encountered. It has not been scanned over yet.
+    Backquote,
+
+    /// Unexpected terminator (a line ending or the end of stream) encountered.
+    /// The line ending has not been scanned over yet.
+    UnexpectedTerminator,
+}
+
 /// Indicator values used in scanning identifiers. These are returned by
 /// `StringScanner::scan_one_character_of_identifier()` when the next character
 /// is not a regular character of an identifier.
@@ -350,6 +365,9 @@ impl<'a> StringScanner<'a> {
             }
             '"' => {
                 self.scan_string()
+            }
+            '`' => {
+                self.scan_explicit_symbol()
             }
             'r' => {
                 match self.scan_raw_string_leaders() {
@@ -744,6 +762,38 @@ impl<'a> StringScanner<'a> {
         return Token::String;
     }
 
+    /// Scan over an explicit symbol
+    fn scan_explicit_symbol(&mut self) -> Token {
+        use self::SymbolSpecials::*;
+
+        // Symbols start with a backquote...
+        assert!(self.cur == Some('`'));
+        self.read();
+
+        loop {
+            match self.scan_one_character_of_symbol() {
+                // ...then we have some characters...
+                Ok(_) => {
+                    // (which we currently ignore)
+                }
+                // ...and finally the symbol ends with a closing backquote.
+                Err(Backquote) => {
+                    self.read();
+                    break;
+                }
+                // But things go wrong sometimes and the symbol may not be terminated
+                Err(UnexpectedTerminator) => {
+                    self.report.error(Span::new(self.start, self.prev_pos),
+                        "Missing closing backquote.");
+
+                    return Token::Unrecognized;
+                }
+            }
+        }
+
+        return Token::ExplicitSymbol;
+    }
+
     /// Scan over a single character or escape sequence for a character literal. Returns an Ok
     /// character if it was scanned successfully, or a special indicator value if there was no
     /// character to scan. Note that there is a difference between 'successfully scanned over
@@ -841,6 +891,56 @@ impl<'a> StringScanner<'a> {
         }
     }
 
+    /// Scan over a single character or escape sequence for an explicit symbol. Returns an Ok
+    /// character if it was scanned successfully, or a special indicator value if there was
+    /// no character to scan. Note that there is a difference between 'successfully scanned over
+    /// a character or an escape sequence' and 'scanned over a correct and valid symbol token'.
+    fn scan_one_character_of_symbol(&mut self) -> Result<char, SymbolSpecials> {
+        use self::SymbolSpecials::*;
+        match self.cur {
+            // Backslash is a marker of escape sequences
+            Some('\\') => {
+                return self.scan_symbol_escape_sequence();
+            }
+            // Symbols cannot contain explicit line endings (i.e., cannot span multiple lines).
+            // Anything multiline is an instant parsing failure as the initial backquote may
+            // have been erroneously placed and because of that we have scanned over something
+            // valuable that was not intended to be a symbol at all. Or the closing backquote
+            // has been forgotten and we have scanned over more than intended. The users must
+            // fix their code in this case as the scanner cannot and must not guess where their
+            // intended symbol actually ends.
+            Some('\n') => {
+                return Err(UnexpectedTerminator);
+            }
+            Some('\r') if self.peek() == Some('\n') => {
+                return Err(UnexpectedTerminator);
+            }
+            // Symbols are correctly terminated by a backquote character. But they may also
+            // contain it, as in `\`` or `\u{60}`. Obviously, we need to discern between a literal
+            // quote (which may be a terminator) and its Unicode escape form (which is never one).
+            Some('`') => {
+                return Err(Backquote);
+            }
+            // Everything else is just a single character
+            Some(c) => {
+                // Drop a warning about a bare CR character. It is *not considered* a line ending,
+                // but must be escaped in characters. These characters are often results of VCS
+                // misconfiguration or other kind of blind automated tampering with source file
+                // contents. None of the popular operating systems uses bare CRs as line endings.
+                if c == '\r' {
+                    self.report.error(Span::new(self.prev_pos, self.pos),
+                        "Bare CR characters must be escaped");
+                }
+                self.read();
+                return Ok(c);
+            }
+            // We expected at least one character or a closing quote
+            None => {
+                return Err(UnexpectedTerminator);
+            }
+        }
+    }
+
     /// Scan over a single character or escape sequence for an identifier. Returns an Ok character
     /// if it was scanned successfully, or a special indicator value if there was no character to
     /// scan. Note that there is a difference between 'successfully scanned over a character or
@@ -857,7 +957,7 @@ impl<'a> StringScanner<'a> {
             // including the whitespace and the end of character stream.
             Some('(') | Some(')') | Some('[') | Some(']') | Some('{') | Some('}') | Some(',') |
             Some(';') | Some(':') | Some('"') | Some(' ') | Some('\'') | Some('\n') | Some('\r') |
-            Some('\t') | Some('#') | None => {
+            Some('\t') | Some('#') | Some('`') | None => {
                 return Err(Terminator);
             }
             // There are a couple of exceptions, though. Comments are delimited by characters from
@@ -994,6 +1094,61 @@ impl<'a> StringScanner<'a> {
             // Immediately notify the caller that a closing double quote will never arrive.
             None => {
                 return Err(UnexpectedTerminator);
+            }
+        }
+    }
+
+    /// Scan over an escape sequence allowed in explicit symbols. Returns an Ok value denoted
+    /// by the sequence (which is not guaranteed to be accurate), or a special indicator value.
+    fn scan_symbol_escape_sequence(&mut self) -> Result<char, SymbolSpecials> {
+        use self::SymbolSpecials::*;
+
+        // All escape sequences start with a backslash
+        assert!(self.cur == Some('\\'));
+        self.read();
+
+        match self.cur {
+            // \u... is a universal marker of a Unicode escape
+            Some('u') => {
+                return Ok(self.scan_escape_unicode(Some('`')).unwrap_or(REPLACEMENT_CHARACTER));
+            }
+
+            // C-style escape sequences and ASCII byte escapes
+            Some('0')  => { self.read(); return Ok('\0'); }
+            Some('t')  => { self.read(); return Ok('\t'); }
+            Some('n')  => { self.read(); return Ok('\n'); }
+            Some('r')  => { self.read(); return Ok('\r'); }
+            Some('"')  => { self.read(); return Ok('\"'); }
+            Some('\\') => { self.read(); return Ok('\\'); }
+            Some('x')  => { return Ok(self.scan_escape_byte()); }
+
+            // Special escape sequence for the backquote character in symbols
+            Some('`')  => { self.read(); return Ok('`'); }
+
+            // Ugh, an end of stream or line right after a backslash. We are scanning a symbol,
+            // backslashes must be always escaped here. Immediately notify the caller that
+            // a closing backquote will never arrive.
+            Some('\n') | None => {
+                return Err(UnexpectedTerminator);
+            }
+            Some('\r') if self.peek() == Some('\n') => {
+                return Err(UnexpectedTerminator);
+            }
+
+            // Everything else is not expected to follow a backslash a means some invalid
+            // escape sequence. Return that character as the value of the escape sequence.
+            Some(c) => {
+                // Report bare CRs just in case the user meant to follow the backslash with
+                // a line ending, but has a crappy text editor. They will be included intact
+                // into the symbol being scanned.
+                if c == '\r' {
+                    self.report.error(Span::new(self.prev_pos, self.pos),
+                        "Bare CR character");
+                }
+                self.report.error(Span::new(self.prev_pos - 1, self.pos),
+                    "Unknown escape sequence");
+                self.read();
+                return Ok(c);
             }
         }
     }
@@ -3568,12 +3723,12 @@ mod tests {
     fn identifier_invalid_characters_plain() {
         check(&[
             // Arbitrary Unicode character sequences are considered invalid. Peculiar cases
-            // in ASCII include control codes (other than whitespace), currently unassigned
-            // backtick (`), and backslashes (\) which are not immediately followed by 'u'.
-            // Non-ASCII cases include usage of characters outside of identifier character set
-            // (e.g., general categories like No, Sk, or C), or usage of bare identifier
-            // continuation characters (without a starter character preceding them). The
-            // whole hunk of such invalid characters is reported as Unrecognized
+            // in ASCII include control codes (other than whitespace), and  backslashes (\)
+            // which are not immediately followed by 'u'. Non-ASCII cases include usage of
+            // characters outside of identifier character set (e.g., general categories like
+            // No, Sk, or C), or usage of bare identifier continuation characters (without
+            // a starter character preceding them). The whole hunk of such invalid characters
+            // is reported as Unrecognized.
             ScannerTestSlice("\u{00}\u{03}\u{04}\u{05}\u{06}\u{07}\u{08}",  Token::Unrecognized),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("\u{12}\u{1A}\u{1B}\u{1C}",                    Token::Unrecognized),
@@ -3591,12 +3746,11 @@ mod tests {
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("\\\\",                                        Token::Unrecognized),
             ScannerTestSlice(" ",                                           Token::Whitespace),
-            ScannerTestSlice("`",                                           Token::Unrecognized),
-            ScannerTestSlice("foo`",                                        Token::Identifier),
+            ScannerTestSlice("test\\",                                      Token::Identifier),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("\u{0307}\u{09E3}\\\u{1DA61}\u{200D}",         Token::Unrecognized),
             ScannerTestSlice("1",                                           Token::Integer),
-            ScannerTestSlice("\u{200C}`\u{200D}",                           Token::Unrecognized),
+            ScannerTestSlice("\u{200C}\u{7F}\u{200D}",                      Token::Unrecognized),
             ScannerTestSlice("x\u{200D}y",                                  Token::Identifier),
             ScannerTestSlice("\n",                                          Token::Whitespace),
             // However! The scanner tolerates invalid Unicode characters in the middle of
@@ -3604,7 +3758,7 @@ mod tests {
             // as if they were valid, including their usage for boundary detection.
             ScannerTestSlice("f\u{0}o",                                     Token::Identifier),
             ScannerTestSlice("+\u{E666}",                                   Token::Identifier),
-            ScannerTestSlice("_`some`_\\invalid\\123",                      Token::Identifier),
+            ScannerTestSlice("_\u{10}some\u{11}_\\invalid\\123",            Token::Identifier),
             ScannerTestSlice("==\u{02DC}==",                                Token::Identifier),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("a\u{0488}b",                                  Token::Identifier),
@@ -3614,10 +3768,10 @@ mod tests {
             ScannerTestSlice("+\u{200D}+=\u{200D}",                         Token::Identifier),
         ], &[ Span::new(  0,   7), Span::new(  8,  12), Span::new( 13,  21), Span::new( 22,  28),
               Span::new( 29,  43), Span::new( 44,  61), Span::new( 62,  63), Span::new( 67,  69),
-              Span::new( 70,  71), Span::new( 74,  75), Span::new( 76,  89), Span::new( 90,  97),
-              Span::new(104, 105), Span::new(107, 110), Span::new(111, 112), Span::new(116, 117),
-              Span::new(118, 119), Span::new(126, 127), Span::new(132, 134), Span::new(138, 140),
-              Span::new(143, 146), Span::new(147, 150), Span::new(152, 155), Span::new(157, 160),
+              Span::new( 74,  75), Span::new( 76,  89), Span::new( 90,  97), Span::new(104, 105),
+              Span::new(107, 110), Span::new(111, 112), Span::new(116, 117), Span::new(118, 119),
+              Span::new(126, 127), Span::new(132, 134), Span::new(138, 140), Span::new(143, 146),
+              Span::new(147, 150), Span::new(152, 155), Span::new(157, 160),
         ], &[]);
     }
 
@@ -3629,7 +3783,7 @@ mod tests {
             // be embedded into Rust strings as is), and other invalid escapes.
             ScannerTestSlice(r"f\u{2000}o",                                 Token::Identifier),
             ScannerTestSlice(r"+\u{E666}",                                  Token::Identifier),
-            ScannerTestSlice(r"_`some`_\invalid\123",                       Token::Identifier),
+            ScannerTestSlice(r"_\u{60}some\u{7F}_\invalid\123",             Token::Identifier),
             ScannerTestSlice(r"==\u{02DC}==",                               Token::Identifier),
             ScannerTestSlice(r" ",                                          Token::Whitespace),
             ScannerTestSlice(r"a\u{0488}b",                                 Token::Identifier),
@@ -3643,11 +3797,11 @@ mod tests {
             ScannerTestSlice(r"f\u{REPLACEMENT CHARACTER}o",                Token::Identifier),
             ScannerTestSlice(r"+\uD900\uDDDD",                              Token::Identifier),
             ScannerTestSlice(r"_\u{9999999999999999}_",                     Token::Identifier),
-        ], &[ Span::new(  1,   9), Span::new( 11,  19), Span::new( 20,  21), Span::new( 25,  26),
-              Span::new( 27,  28), Span::new( 35,  36), Span::new( 41,  49), Span::new( 53,  61),
-              Span::new( 64,  72), Span::new( 73,  81), Span::new( 83,  91), Span::new( 93, 101),
-              Span::new(105, 107), Span::new(112, 135), Span::new(139, 143), Span::new(137, 143),
-              Span::new(145, 149), Span::new(143, 149), Span::new(150, 170),
+        ], &[ Span::new(  1,   9), Span::new( 11,  19), Span::new( 20,  26), Span::new( 30,  36),
+              Span::new( 37,  38), Span::new( 45,  46), Span::new( 51,  59), Span::new( 63,  71),
+              Span::new( 74,  82), Span::new( 83,  91), Span::new( 93, 101), Span::new(103, 111),
+              Span::new(115, 117), Span::new(122, 145), Span::new(149, 153), Span::new(147, 153),
+              Span::new(155, 159), Span::new(153, 159), Span::new(160, 180),
         ], &[]);
     }
 
@@ -3853,6 +4007,122 @@ mod tests {
               Span::new( 68,  72), Span::new( 74,  80), Span::new( 72,  80), Span::new( 83,  86),
               Span::new( 87,  90), Span::new( 96, 104),
         ], &[]);
+    }
+
+    #[test]
+    fn symbol_explicit() {
+        check(&[
+            // Explicit symbols look like strings quoted with backquotes
+            ScannerTestSlice("`foo`",                                       Token::ExplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("`one two three`",                             Token::ExplicitSymbol),
+            ScannerTestSlice("`1-2-3`",                                     Token::ExplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("`'\"'`",                                      Token::ExplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("``",                                          Token::ExplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            // They can contain Unicode and support all character escape sequences,
+            // plus an additional escape sequence for the backquote character
+            ScannerTestSlice("`\\0\\t\\r\\n\\\\\\\"`",                      Token::ExplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("`\u{3053}\u{3093}\u{306B}\u{3061}\u{306F}`",  Token::ExplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("`\\u{05E9}\\u{05DC}\\u{05D5}\\u{05DD}`",      Token::ExplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("`\x00\x32`",                                  Token::ExplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("`///*//*/`",                                  Token::ExplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("`\\`...\\``",                                 Token::ExplicitSymbol),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn symbol_explicit_invalid_escapes() {
+        check(&[
+            // Invalid escape sequences in explicit symbols are reported as in string literals
+            ScannerTestSlice(r"`\u{123\u456}\u{testing...}`",               Token::ExplicitSymbol),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"`\uguu\uDEAD\uF0F0F0F0F0F0F0F0\u`",          Token::ExplicitSymbol),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"`\a\b\f\v\?\'`",                             Token::ExplicitSymbol),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"`\x\x1\x1234`",                              Token::ExplicitSymbol),
+        ], &[ Span::new( 7,  7), Span::new( 9,  9), Span::new(15, 27), Span::new(32, 32),
+              Span::new(37, 41), Span::new(35, 41), Span::new(43, 59), Span::new(41, 59),
+              Span::new(61, 61), Span::new(64, 66), Span::new(66, 68), Span::new(68, 70),
+              Span::new(70, 72), Span::new(72, 74), Span::new(74, 76), Span::new(81, 81),
+              Span::new(83, 84), Span::new(86, 90),
+        ], &[]);
+    }
+
+    #[test]
+    fn symbol_explicit_invalid_mulitline() {
+        check(&[
+            // Explicit symbols cannot span multiple lines. They are handled similar to character
+            // literals. Though, one can embed newline characters into them via escape sequences.
+            ScannerTestSlice("`example",                                    Token::Unrecognized),
+            ScannerTestSlice("\n",                                          Token::Whitespace),
+            ScannerTestSlice("`some more",                                  Token::Unrecognized),
+            ScannerTestSlice("\r\n",                                        Token::Whitespace),
+            ScannerTestSlice("`Old\rApple`",                                Token::ExplicitSymbol),
+            ScannerTestSlice("`",                                           Token::Unrecognized),
+            ScannerTestSlice("\n",                                          Token::Whitespace),
+            ScannerTestSlice("`",                                           Token::Unrecognized),
+            ScannerTestSlice("\r\n",                                        Token::Whitespace),
+            ScannerTestSlice("`\r`",                                        Token::ExplicitSymbol),
+            ScannerTestSlice("\n",                                          Token::Whitespace),
+            ScannerTestSlice("`\\",                                         Token::Unrecognized),
+            ScannerTestSlice("\n\t",                                        Token::Whitespace),
+            ScannerTestSlice("test",                                        Token::Identifier),
+            ScannerTestSlice("`",                                           Token::Unrecognized),
+        ], &[ Span::new( 0,  8), Span::new( 9, 19), Span::new(25, 26), Span::new(32, 33),
+              Span::new(34, 35), Span::new(38, 39), Span::new(41, 43), Span::new(49, 50),
+        ], &[]);
+    }
+
+    #[test]
+    fn symbol_explicit_premature_termination() {
+        // Unexpected EOFs are handled similar to characters and strings
+        check(&[ ScannerTestSlice("`",      Token::Unrecognized) ], &[ Span::new(0, 1) ], &[]);
+        check(&[ ScannerTestSlice("`xyz",   Token::Unrecognized) ], &[ Span::new(0, 4) ], &[]);
+        check(&[ ScannerTestSlice("`\\x",   Token::Unrecognized) ], &[ Span::new(3, 3),
+                                                                       Span::new(0, 3) ], &[]);
+        check(&[ ScannerTestSlice("`\\u",   Token::Unrecognized) ], &[ Span::new(3, 3),
+                                                                       Span::new(0, 3) ], &[]);
+        check(&[ ScannerTestSlice("`\\u{1", Token::Unrecognized) ], &[ Span::new(5, 5),
+                                                                       Span::new(0, 5) ], &[]);
+    }
+
+    #[test]
+    fn symbol_explicit_no_type_suffixes() {
+        check(&[
+            // Explicit symbols do not have type suffixes. They are terminated right after the
+            // backquote.
+            ScannerTestSlice("`foo`",                                       Token::ExplicitSymbol),
+            ScannerTestSlice("bar",                                         Token::Identifier),
+            ScannerTestSlice("`baz`",                                       Token::ExplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("`o`",                                         Token::ExplicitSymbol),
+            ScannerTestSlice("r\"a\"",                                      Token::RawString),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("`x`",                                         Token::ExplicitSymbol),
+            ScannerTestSlice("'y'",                                         Token::Character),
+            ScannerTestSlice("\"z\"",                                       Token::String),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("``",                                          Token::ExplicitSymbol),
+            ScannerTestSlice("+",                                           Token::Identifier),
+            ScannerTestSlice("``",                                          Token::ExplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("`.`",                                         Token::ExplicitSymbol),
+            ScannerTestSlice(".",                                           Token::Dot),
+            ScannerTestSlice("`.`",                                         Token::ExplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("`:`",                                         Token::ExplicitSymbol),
+            ScannerTestSlice(":",                                           Token::Colon),
+            ScannerTestSlice("e",                                           Token::Identifier),
+        ], &[], &[]);
     }
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
