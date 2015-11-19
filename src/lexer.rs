@@ -76,6 +76,9 @@ pub enum Token {
     /// An identifier (of any kind)
     Identifier,
 
+    /// An implicit symbol
+    ImplicitSymbol,
+
     /// Marker token denoting invalid character sequences
     Unrecognized,
 }
@@ -354,12 +357,12 @@ impl<'a> StringScanner<'a> {
                         self.scan_raw_string(hashes)
                     }
                     None => {
-                        self.scan_identifier_word('r')
+                        self.scan_identifier_word_or_symbol('r')
                     }
                 }
             }
             _ => {
-                self.scan_identifier()
+                self.scan_identifier_or_symbol()
             }
         };
 
@@ -1309,8 +1312,8 @@ impl<'a> StringScanner<'a> {
         return true;
     }
 
-    /// Scan over an identifier
-    fn scan_identifier(&mut self) -> Token {
+    /// Scan over an identifier or maybe an implicit symbol
+    fn scan_identifier_or_symbol(&mut self) -> Token {
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, MARK_START, QUOTE_START};
         use self::IdentifierSpecials::*;
@@ -1323,7 +1326,7 @@ impl<'a> StringScanner<'a> {
 
                 // If it's a valid starter then dispatch to kind-specific loops
                 if category.is(WORD_START) {
-                    return self.scan_identifier_word(c);
+                    return self.scan_identifier_word_or_symbol(c);
                 }
                 if category.is(MARK_START) {
                     return self.scan_identifier_mark(c);
@@ -1441,6 +1444,19 @@ impl<'a> StringScanner<'a> {
         }
 
         return Token::Identifier;
+    }
+
+    /// Scan over a standalone word identifier or maybe an implicit symbol
+    fn scan_identifier_word_or_symbol(&mut self, initial: char) -> Token {
+        let initial_token = self.scan_identifier_word(initial);
+
+        // Word identifier followed by a single colon forms an implicit symbol token.
+        if (self.cur == Some(':')) && (self.peek() != Some(':')) {
+            self.read();
+            return Token::ImplicitSymbol;
+        }
+
+        return initial_token;
     }
 
     /// Scan over a mark identifier
@@ -3701,6 +3717,143 @@ mod tests {
     }
 
     // TODO: boundary tests between all token types
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // Symbols
+
+    #[test]
+    fn symbol_implicit() {
+        check(&[
+            // Implicit symbols are word identifiers followed by a single literal colon.
+            // For example, ASCII words are fine:
+            ScannerTestSlice("foo:",                                        Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("Symbol:",                                     Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("_:",                                          Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("_1:",                                         Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            // Unicode words are fine too:
+            ScannerTestSlice("\u{691C}\u{67FB}:",                           Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{1FAA}:",                                   Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{3007}\u{3007}\u{3007}:",                   Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{212E}\u{2118}:",                           Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{09A6}\u{09C0}\u{09B0}\u{09CD}\u{0998}:",   Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            // As well as escaped ones:
+            ScannerTestSlice("\u{005F}\\u{0661}\\u{0665}:",                 Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{005F}\\u{FE4F}\u{005F}:",                  Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{0078}\\u{19DA}:",                          Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\\u{0915}\u{094D}\\u{0937}:",                 Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\\u{1FAA}:",                                  Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn symbol_implicit_boundaries() {
+        check(&[
+            // Only a single colon forms a boundary for a symbol. It can be followed by anything
+            // except for another colon, in which case we see a word identifier followed by
+            // a double colon.
+            ScannerTestSlice("foo:",                                        Token::ImplicitSymbol),
+            ScannerTestSlice("+",                                           Token::Identifier),
+            ScannerTestSlice("bar",                                         Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("x:",                                          Token::ImplicitSymbol),
+            ScannerTestSlice("\n",                                          Token::Whitespace),
+            ScannerTestSlice("y:",                                          Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("z:",                                          Token::ImplicitSymbol),
+            ScannerTestSlice("':'",                                         Token::Character),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("_:",                                          Token::ImplicitSymbol),
+            ScannerTestSlice("10",                                          Token::Integer),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("zork",                                        Token::Identifier),
+            ScannerTestSlice("::",                                          Token::Dualcolon),
+            ScannerTestSlice("x",                                           Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            // Also, only word identifiers can be implicit symbols
+            ScannerTestSlice("++",                                          Token::Identifier),
+            ScannerTestSlice(":",                                           Token::Colon),
+            ScannerTestSlice("$",                                           Token::Identifier),
+            ScannerTestSlice(":",                                           Token::Colon),
+            ScannerTestSlice(";",                                           Token::Semicolon),
+            ScannerTestSlice(":",                                           Token::Colon),
+            ScannerTestSlice("[",                                           Token::Lbrack),
+            ScannerTestSlice(":",                                           Token::Colon),
+            ScannerTestSlice("]",                                           Token::Rbrack),
+            ScannerTestSlice("\u{2025}",                                    Token::Identifier),
+            ScannerTestSlice(":",                                           Token::Colon),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\u{0024}\u{0488}",                            Token::Identifier),
+            ScannerTestSlice(":",                                           Token::Colon),
+            ScannerTestSlice("\u{FE18}",                                    Token::Identifier),
+            ScannerTestSlice(":",                                           Token::Colon),
+            ScannerTestSlice("\u{300E}",                                    Token::Identifier),
+            // This includes escaped identifiers
+            ScannerTestSlice("\u{220F}\\u{2230}",                           Token::Identifier),
+            ScannerTestSlice(":",                                           Token::Colon),
+            ScannerTestSlice("\u{19FB}\u{19FF}",                            Token::Identifier),
+            ScannerTestSlice(":",                                           Token::Colon),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\\u{26B5}\\u{1D1E7}",                         Token::Identifier),
+            ScannerTestSlice("::",                                          Token::Dualcolon),
+            ScannerTestSlice("\\u{2E02}",                                   Token::Identifier),
+            ScannerTestSlice(":",                                           Token::Colon),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("\\u{2E21}",                                   Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            // Finally, implicit symbols do not allow type suffixes
+            ScannerTestSlice("foo:",                                        Token::ImplicitSymbol),
+            ScannerTestSlice("bar",                                         Token::Identifier),
+            ScannerTestSlice("::",                                          Token::Dualcolon),
+            ScannerTestSlice("baz:",                                        Token::ImplicitSymbol),
+            ScannerTestSlice("_",                                           Token::Identifier),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            // And cannot 'steal' others' suffixes
+            ScannerTestSlice("123foo",                                      Token::Integer),
+            ScannerTestSlice(":",                                           Token::Colon),
+            ScannerTestSlice("bar:",                                        Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("'x'x",                                        Token::Character),
+            ScannerTestSlice("::",                                          Token::Dualcolon),
+            ScannerTestSlice("y",                                           Token::Identifier),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn symbol_implicit_invalid_characters() {
+        check(&[
+            // Invalid Unicode escapes and characters in symbols are reported as usual
+            ScannerTestSlice("a\\u{0488}b:",                                Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("a\u{0488}b:",                                 Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("example\\u{2E}com:",                          Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("f\\u{REPLACEMENT CHARACTER}o:",               Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("w\\u2113\\u1d466d:",                          Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("C\u{20DD}_\u{20E3}:",                         Token::ImplicitSymbol),
+            ScannerTestSlice(" ",                                           Token::Whitespace),
+            ScannerTestSlice("test\\u{003A}:",                              Token::ImplicitSymbol),
+        ], &[ Span::new(  1,   9), Span::new( 13,  15), Span::new( 25,  31), Span::new( 39,  62),
+              Span::new( 68,  72), Span::new( 74,  80), Span::new( 72,  80), Span::new( 83,  86),
+              Span::new( 87,  90), Span::new( 96, 104),
+        ], &[]);
+    }
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     // Test helpers
