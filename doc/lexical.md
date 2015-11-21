@@ -1,14 +1,14 @@
 Lexical syntax
 ==============
 
-## 1 Input format
+## 1 – Input format
 
 Sash operates on source code represented with Unicode text encoded in UTF-8
 format. Alphabetic case is significant. Indentation and line-breaking are
 free-form.
 
 
-## 2 Whitespace
+## 2 – Whitespace
 
 Sash recognizes space (U+0020), tab (U+0009), newline (U+000A), and return
 (U+000D) characters as whitespace. Newline (LF) and return-newline (CRLF)
@@ -17,30 +17,13 @@ sequences are recognized as line endings.
 Whitespace is not semantically significant, but affects syntactical meaning
 by denoting token boundaries.
 
-> **Q:** Why isn't Unicode whitespace supported?
->
-> **A:** Because of the dominance of ASCII in the source code. Unicode strings
-> and identifiers are useful features. Supporting over a dozen varieties of
-> semantically insignificant characters is hardly a useful feature.
->
-> **Q:** What about CR-only line endings?
->
-> **A:** This line ending style is not currently in use by any major operating
-> system. As with Unicode whitespace, I would not like to support it 'just in
-> case'. Speaking of Unicode, the same is true for these fancy line separators
-> U+2028 and U+2029 which [do not actually fix anything][xkcd-927]. Support for
-> Windows line endings alone has kinda ugly effect on the scanning code. But!
-> Given that we already care about these characters at all, we _do_ detect and
-> report bare return characters as they are often caused by incorrect automated
-> processing of the source code.
 
-[xkcd-927]: https://xkcd.com/927
-
-
-## 3 Comments
+## 3 – Comments
 
 Comments are allowed where whitespace is allowed and are treated as whitespace
 (i.e., they are not semantically significant).
+
+Examples of comments:
 
     // line comments span until the end of the line
 
@@ -49,55 +32,179 @@ Comments are allowed where whitespace is allowed and are treated as whitespace
      */
 
 
-### 3.1 Documentation comments
+### 3.1 – Documentation comments
 
-> **TODO:** elaborate
+Sash also defined a special kind of comments for writing inline source-level
+documentation. These comments are not completely ignored and can be used by
+automated tools. The compiler may also check for their existence as well as
+for their well-formedness, possibly producing compilation errors. However,
+they still do not affect the semantics of programs in any way.
 
-> **TODO:** these should be Doxygen-processable
+Examples of documentation comments:
 
-    /// Documentation comment
+    /// Line documentation comment applied to the entity
+    /// which follows it in the source code.
 
-    /** Documentation comment. */
+    //! Line documentation comment applied to the entity
+    //! which encloses it in the source code.
 
-    //! Documentation comment.
+    /**
+     *  Block documentation comment applied to the entity
+     *  which follows it in the source code.
+     */
 
-    /*! Documentation comment. */
-
-
-## 4 Identifiers
-
-Sash has two kinds of identifiers: **words** and **symbols**. `Variable` is an
-example of word and `+` is an example of symbol. As you may have guessed, words
-are intended for general usage while symbols are meant for various operators.
-Both identifier kinds use nonintersecting sets of characters so they can be told
-apart even when whitespace is omitted, as in `a+b`.
+    /*!
+     *  Block documentation comment applied to the entity
+     *  which encloses it in the source code.
+     */
 
 
-### 4.1 Words
+## 4 – Identifiers
+
+Sash has flexible syntax of identifiers which are divided into three _kinds_:
+**words**, **marks**, and **quotes**. `Variable` is an example of a word, `=>`
+is an example of a mark, and `⌊ ⌋` is an example of a quote.
+
+Three kinds are needed to cleanly support _user-defined operators_. Words are
+intended for general usage; marks are intended for infix, prefix, and postfix
+operators; and quotes are intended for some outfix (enclosing) operators. All
+identifier kinds are composed of nonitersecting sets of characters so that
+they could be told apart even when whitespace is omitted, as in `a+b`.
+
+Unicode is supported in all identifier kinds, but has its peculiarities.
+Unicode can be freely mixed with ASCII. There is also an ASCII compatibility
+form for the cases when full Unicode range is not available.
+
+
+### 4.1 – Words
 
 Words are your usual C-style identifiers. A word starts with an English letter
 of any case, and is followed by zero or more English letters and decimal digits.
-The underscore character `_` is considered a letter.
+The underscore character `_` is considered a (lowercase) letter.
 
 Examples of words:
 
     foo         ExampleIdentifier42     snake_cased_identifier      __PYTHON__
 
 
-### 4.2 Symbols
+#### 4.1.1 – Unicode words
 
-Symbols consist of one or more of the following non-alphabetical characters:
+Unicode words are supported in a manner similar to the one described in
+[_Unicode Annex #31_](http://unicode.org/reports/tr31/).
+
+Specifically, a word starts with a character that has one of the following
+Unicode _general categories_:
+
+  - **Lu** — uppercase letters
+  - **Ll** — lowercase letters
+  - **Lt** — titlecase letters
+  - **Lm** — modifier letters
+  - **Lo** — other letters
+  - **Nl** — letter numbers
+
+After the first character the following additional general categories are
+allowed to be used:
+
+  - **Mn** — nonspacing marks
+  - **Mc** — spacing combining marks
+  - **Nd** — decimal numbers
+  - **Pc** — connector punctuation
+
+As an extension, Sash also allows the following two format control characters
+to be used in word continuations (after the first character):
+
+  - U+200C ZERO-WIDTH NON-JOINER
+  - U+200D ZERO-WIDTH JOINER
+
+Finally, due to Unicode stability requirements, starter characters include
+several extra ones with Unicode property **Other_ID_Start**, and continuation
+characters include the ones with the property **Other_ID_Continue**.
+
+Examples of Unicode words:
+
+    TODO
+
+
+### 4.2 – Marks
+
+Marks consist of one or more of the following non-alphabetical characters:
 
     ! $ % & * + - ~ / < = > ? @ ^ |
 
-Symbols can also include two or more consecutive dots `..`
+Marks can also include two or more consecutive dots: `..`
 
-Examples of symbols:
+Examples of marks:
 
     +         /         <<=        &&         @         <*>        ...
 
 
-### 4.3 Unicode in idenitifiers
+#### 4.2.1 – Unicode marks
+
+Unicode marks are composed of characters of the following general categories:
+
+  - **Pd** — dash punctuation
+  - **Po** — other punctuation
+  - **Sc** — currency symbols
+  - **Sm** — mathematical symbols
+  - **So** — other symbols
+
+After the first character marks can also contain the following modifiers:
+
+  - **Mc** — spacing combining modifiers
+  - **Mn** — non-spacing combining modifiers
+  - **Me** — enclosing modifiers
+
+Marks are also affected by Unicode stability requirements, but the exceptional
+characters sets for them are currently empty (as of Unicode 8.0.0).
+
+Examples of Unicode marks:
+
+    TODO
+
+
+### 4.3 – Quotes
+
+Quotes are peculiar identifier kind. While words and marks can span multiple
+characters, quote identifiers are always restricted to one character. This
+means that they do not coalesce when placed near each other, which helps them
+to be used in enclosing contexts without additional whitespace.
+
+There are no ASCII characters for quote identifiers. `( ) [ ] { } ' " \`` would
+qualify for the role of ASCII quotes, but they already have reserved meanings.
+
+Unicode quotes are formed by the following character general categories:
+
+  - **Ps** — opening punctuation
+  - **Pe** — closing punctuation
+  - **Pi** — initial quotes
+  - **Pf** — final quotes
+
+Unicode quotes do not allow any combining modifiers after them.
+
+Examples of Unicode quotes:
+
+    TODO
+
+
+### 4.4 – Unicode in idenitifiers
+
+#### 4.4.1 – Normalization
+
+#### 4.4.2 – Stability
+
+#### 4.4.3 – ASCII fallback
+
+
+### 4.5 – Multipart identifiers
+
+TODO
+
+
+### 4.6 – Reserved identifiers
+
+TODO
+
+------------------------------------------------------------------------
 
 Sash supports usage of valid Unicode in identifiers. However, the ASCII range
 is handled using Sash-specific rules, regardless of Unicode categories and
@@ -338,30 +445,6 @@ converted into `\n` characters regardless of their source code representation.
 
     r"|\            "\\\n  "
       |"
-
-
-### 9.3 Byte strings
-
-> **TODO:** do we _really_ need this Rust calque?
-
-These are a special kind of 'strings' primarily used to interact with C API.
-Actually, they are byte arrays which are written like strings with `b` prefix:
-
-    b"123\0"          [0x31, 0x32, 0x33, 0x00]
-
-In these strings you can only use ASCII characters, traditional C escapes, and
-`\xFF` escapes (which mean bytes here, not Unicode code points). Line breaks
-are converted into `\x0A` bytes, as usual.
-
-    b"\x09          [0x09, 0x0A, 0x20, 0x20, 0x62, 0x61, 0x72]
-      bar"
-
-There are also raw byte strings for cases when escaping a hassle:
-
-    br"$C:\Some\Path\"With spaces"$"
-
-which cannot contain non-ASCII characters at all.
-
 
 ## 10 Symbols
 
