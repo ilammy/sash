@@ -22,6 +22,9 @@ pub enum Token {
     /// Non-significant comment
     Comment,
 
+    /// Documentation comment
+    DocComment,
+
     /// Left (opening) parenthesis `(`
     Lparen,
 
@@ -411,6 +414,10 @@ impl<'a> StringScanner<'a> {
         self.read();
         self.read();
 
+        // '///' and '//!' indicate documentation comments, but '////...' does not.
+        let doc_comment = (self.cur == Some('!')) ||
+            ((self.cur == Some('/')) && (self.peek() != Some('/')));
+
         while !self.at_eof() {
             match self.cur.unwrap() {
                 '\n' => {
@@ -425,10 +432,15 @@ impl<'a> StringScanner<'a> {
                             break;
                         }
                         _ => {
-                            self.report.warning(Span::new(self.prev_pos, self.pos),
-                                "Bare CR character encountered in a line comment. \
-                                 Did you mean Windows line ending, CRLF?");
-
+                            if doc_comment {
+                                self.report.error(Span::new(self.prev_pos, self.pos),
+                                    "Bare CR characters are not allowed in documentation \
+                                     comments");
+                            } else {
+                                self.report.warning(Span::new(self.prev_pos, self.pos),
+                                    "Bare CR character encountered in a line comment. \
+                                     Did you mean Windows line ending, CRLF?");
+                            }
                             self.read();
                         }
                     }
@@ -437,7 +449,7 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        return Token::Comment;
+        return if doc_comment { Token::DocComment } else { Token::Comment };
     }
 
     /// Scan a block comment.
@@ -445,6 +457,11 @@ impl<'a> StringScanner<'a> {
         assert!(self.cur == Some('/') && self.peek() == Some('*'));
         self.read();
         self.read();
+
+        // '/**' and '/*!' indicate documentation comments, but '/***...' does not.
+        // Also take care to treat '/**/' as a regular comment.
+        let doc_comment = (self.cur == Some('!')) ||
+            ((self.cur == Some('*')) && (self.peek() != Some('*')) && (self.peek() != Some('/')));
 
         let mut nesting_level = 1;
 
@@ -473,19 +490,31 @@ impl<'a> StringScanner<'a> {
                         _ => { }
                     }
                 }
+                '\r' if doc_comment && self.peek() != Some('\n') => {
+                    self.report.error(Span::new(self.prev_pos, self.pos),
+                        "Bare CR characters are not allowed in documentation \
+                         comments");
+                    self.read();
+                }
                 _ => { self.read(); }
             }
         }
 
         if nesting_level > 0 {
-            self.report.error(Span::new(self.start, self.pos),
-                "Unexpected end of file while reading a block comment. \
-                 Please look for the missing block comment closure */");
+            if doc_comment {
+                self.report.error(Span::new(self.start, self.pos),
+                    "Unexpected end of file while reading a documentation comment. \
+                     Please look for the missing block comment closure */");
+            } else {
+                self.report.error(Span::new(self.start, self.pos),
+                    "Unexpected end of file while reading a block comment. \
+                     Please look for the missing block comment closure */");
+            }
 
             return Token::Unrecognized;
         }
 
-        return Token::Comment;
+        return if doc_comment { Token::DocComment } else { Token::Comment };
     }
 
     /// Scan over any number
@@ -1912,6 +1941,108 @@ mod tests {
     fn block_comment_line_comment_allows_unterminated_blocks() {
         check(&[
             ScannerTestSlice("// /* doesn't matter", Token::Comment),
+        ], &[], &[]);
+    }
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // Doc comments
+
+    #[test]
+    fn doc_comment_line() {
+        check(&[
+            ScannerTestSlice("/// Example\n",                                   Token::DocComment),
+            ScannerTestSlice("/// Other line\r\n",                              Token::DocComment),
+            ScannerTestSlice("/// More\n",                                      Token::DocComment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("//! Inner comments\n",                            Token::DocComment),
+            ScannerTestSlice("//! Windows lines\r\n",                           Token::DocComment),
+            ScannerTestSlice("\r\n",                                            Token::Whitespace),
+            ScannerTestSlice("/// Mixed\n",                                     Token::DocComment),
+            ScannerTestSlice("//! Mixed\r\n",                                   Token::DocComment),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn doc_comment_block() {
+        check(&[
+            ScannerTestSlice("/** Example */",                                  Token::DocComment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("/** Multiple\n    lines\r\n    are allowed */",   Token::DocComment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("/*! Some more\n    inner\r\n comments !*/",       Token::DocComment),
+            ScannerTestSlice("\r\n",                                            Token::Whitespace),
+            ScannerTestSlice("/*! and /*! they /** can */ be ****/ nested */",  Token::DocComment),
+            ScannerTestSlice("/** in /*!! any */ way /* you */ like */",        Token::DocComment),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn doc_comment_intertype_nesting() {
+        check(&[
+            ScannerTestSlice("/// This /* is fine */\n",                        Token::DocComment),
+            ScannerTestSlice("//! This /*! is too\r\n",                         Token::DocComment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("/** Also // fine */",                             Token::DocComment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("/*! Fine as well // */",                          Token::DocComment),
+            ScannerTestSlice("\r\n",                                            Token::Whitespace),
+            ScannerTestSlice("// /// These are also\n",                         Token::Comment),
+            ScannerTestSlice("/* /** // fine */ */",                            Token::Comment),
+        ], &[], &[]);
+    }
+
+    #[test]
+    fn doc_comment_block_unterminated() {
+        check(&[ScannerTestSlice("/** forgot ", Token::Unrecognized)], &[Span::new(0, 11)], &[]);
+        check(&[ScannerTestSlice("/*! as well", Token::Unrecognized)], &[Span::new(0, 11)], &[]);
+        check(&[ScannerTestSlice("/** /*nest",  Token::Unrecognized)], &[Span::new(0, 10)], &[]);
+        check(&[ScannerTestSlice("/*!/*!*/",    Token::Unrecognized)], &[Span::new(0,  8)], &[]);
+    }
+
+    #[test]
+    fn doc_comment_bare_crs() {
+        check(&[
+            ScannerTestSlice("/// bare crs\r///are errors\n",                   Token::DocComment),
+            ScannerTestSlice("//! in all\r\r\rkinds of doc-comments\n",         Token::DocComment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("/** and I mean \r all */",                        Token::DocComment),
+            ScannerTestSlice("\r\n",                                            Token::Whitespace),
+            ScannerTestSlice("/*! like /* \r this */ */",                       Token::DocComment),
+        ], &[ Span::new( 12,  13), Span::new( 37,  38), Span::new( 38,  39), Span::new( 39,  40),
+              Span::new( 78,  79), Span::new(100, 101),
+        ], &[]);
+    }
+
+    #[test]
+    fn doc_comment_non_docs() {
+        check(&[
+            ScannerTestSlice("/////////////////////////////////\n",             Token::Comment),
+            ScannerTestSlice("// These are not doc comments\n",                 Token::Comment),
+            ScannerTestSlice("/////////////////////////////////\n",             Token::Comment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("/***\r\n * These are not as well\n ***/",         Token::Comment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("//!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",              Token::DocComment),
+            ScannerTestSlice("//! Though this is one\n",                        Token::DocComment),
+            ScannerTestSlice("//!/////////////////////////////\n",              Token::DocComment),
+            ScannerTestSlice(" \n ",                                            Token::Whitespace),
+            ScannerTestSlice("/////////////////////////////////\n",             Token::Comment),
+            ScannerTestSlice("/// It's a bit tricky...\n",                      Token::DocComment),
+            ScannerTestSlice("/////////////////////////////////\n",             Token::Comment),
+            ScannerTestSlice("\r\n",                                            Token::Whitespace),
+            ScannerTestSlice("/// As well as this one, and this:\n",            Token::DocComment),
+            ScannerTestSlice("///\n",                                           Token::DocComment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("/*!!! A doc-comment */",                          Token::DocComment),
+            ScannerTestSlice("\r\t\n",                                          Token::Whitespace),
+            ScannerTestSlice("/*!** A doc-comment as well **!*/",               Token::DocComment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("// This is not a doc comment:\n",                 Token::Comment),
+            ScannerTestSlice("/**/",                                            Token::Comment),
+            ScannerTestSlice("// But this one is:\r\n",                         Token::Comment),
+            ScannerTestSlice("/*!*/",                                           Token::DocComment),
+            ScannerTestSlice("// And this one isn't:\n",                        Token::Comment),
+            ScannerTestSlice("/***/",                                           Token::Comment),
         ], &[], &[]);
     }
 
