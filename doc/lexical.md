@@ -169,7 +169,7 @@ characters, quote identifiers are always restricted to one character. This
 means that they do not coalesce when placed near each other, which helps them
 to be used in enclosing contexts without additional whitespace.
 
-There are no ASCII characters for quote identifiers. `( ) [ ] { } ' " \`` would
+There are no ASCII characters for quote identifiers. `( ) [ ] { } ' " `` would
 qualify for the role of ASCII quotes, but they already have reserved meanings.
 
 Unicode quotes are formed by the following character general categories:
@@ -312,11 +312,11 @@ Sash defines several delimiter tokens with special meaning:
   - `(`, `)` — positional collections, expression groups, function calls
   - `[`, `]` — ordered collections, indexing, type parameters, attributes
   - `{`, `}` — unordered collections, various code and declaration blocks
-  - '.' — field access, method calls
-  - ',' — subexpression separator
-  - ';' — expression separator
-  - ':' — type declarations
-  - '::' — namespace separator
+  - `.` — field access, method calls
+  - `,` — subexpression separator
+  - `;` — expression separator
+  - `:` — type declarations
+  - `::` — namespace separator
   - `#` — multipart identifiers, attributes
 
 
@@ -339,10 +339,10 @@ Integers are typically written using decimal digits:
 But you may use binary, octal, and hexadecimal forms if needed:
 
 <table>
-  <tr><td><tt>57005</tt></td>              <td>base 10</td></tr>
-  <tr><td><tt>0xDEad</tt></td>             <td>base 16</td></tr>
-  <tr><td><tt>0o157255</tt></td>           <td>base 8</td></tr>
-  <tr><td><tt>0b1101111010101101</tt></td> <td>base 2</td></tr>
+  <tr><td><code>57005</code></td>              <td>base 10</td></tr>
+  <tr><td><code>0xDEad</code></td>             <td>base 16</td></tr>
+  <tr><td><code>0o157255</code></td>           <td>base 8</td></tr>
+  <tr><td><code>0b1101111010101101</code></td> <td>base 2</td></tr>
 </table>
 
 
@@ -413,11 +413,12 @@ escapes:
 
 <table>
   <tr>
-    <td><tt>'\x12'</tt></td>
-    <td>exactly two hex digits, restricted to ASCII (`\x00`...`\x7F`)</td>
+    <td><code>'\x12'</code></td>
+    <td>exactly two hex digits, restricted to ASCII
+        (<code>\x00</code>...<code>\x7F</code>)</td>
   </tr>
   <tr>
-    <td><tt>'\u{4FDD}'</tt></td>
+    <td><code>'\u{4FDD}'</code></td>
     <td>one to six significant hex digits, restricted to valid Unicode
         scalar values</td>
   </tr>
@@ -457,14 +458,14 @@ Examples of multiline strings:
     <th>Escaped form</th>
   </tr>
   <tr>
-    <td><tt>"foo
-bar"</tt></td>
-    <td><tt>"foo\nbar"</tt></td>
+    <td><code>"foo
+bar"</code></td>
+    <td><code>"foo\nbar"</code></td>
   </tr>
   <tr>
-    <td><tt>"foo
-    bar"</tt></td>
-    <td><tt>"foo\n    bar"</tt></td>
+    <td><code>"foo
+    bar"</code></td>
+    <td><code>"foo\n    bar"</code></td>
   </tr>
 </table>
 
@@ -479,9 +480,9 @@ whitespace on the following line:
     <th>Escaped form</th>
   </tr>
   <tr>
-    <td><tt>"foo\
-bar"</tt></td>
-    <td><tt>"foobar"</tt></td>
+    <td><code>"foo\
+bar"</code></td>
+    <td><code>"foobar"</code></td>
   </tr>
 </table>
 
@@ -498,12 +499,12 @@ Raw strings are prefixed with an `r`:
     <th>Cooked string</th>
   </tr>
   <tr>
-    <td><tt>r"123"</tt></td>
-    <td><tt>"123"</tt></td>
+    <td><code>r"123"</code></td>
+    <td><code>"123"</code></td>
   </tr>
   <tr>
-    <td><tt>r"\r\n\u{123}\"</tt></td>
-    <td><tt>"\\r\\n\\u{123}\\"</tt></td>
+    <td><code>r"\r\n\u{123}\"</code></td>
+    <td><code>"\\r\\n\\u{123}\\"</code></td>
   </tr>
 </table>
 
@@ -516,12 +517,12 @@ amount of hashes `#`:
     <th>Cooked string</th>
   </tr>
   <tr>
-    <td><tt>r#"""#</tt></td>
-    <td><tt>"\""</tt></td>
+    <td><code>r#"""#</code></td>
+    <td><code>"\""</code></td>
   </tr>
   <tr>
-    <td><tt>r##"\xx""#\xx"##</tt></td>
-    <td><tt>"\\xx\"\"#\\xx"</tt></td>
+    <td><code>r##"\xx""#\xx"##</code></td>
+    <td><code>"\\xx\"\"#\\xx"</code></td>
   </tr>
 </table>
 
@@ -534,14 +535,14 @@ normalized into `\n`, but the backslashes stay themselves:
     <th>Cooked string</th>
   </tr>
   <tr>
-    <td><tt>r"
-"</tt></td>
-    <td><tt>"\n"</tt></td>
+    <td><code>r"
+"</code></td>
+    <td><code>"\n"</code></td>
   </tr>
   <tr>
-    <td><tt>r"\
-x"</tt></td>
-    <td><tt>"\\\nx"</tt></td>
+    <td><code>r"\
+x"</code></td>
+    <td><code>"\\\nx"</code></td>
   </tr>
 </table>
 
@@ -573,5 +574,5 @@ identifiers. Thus they are NFKC-normalized in order to prevent confusion and
 mismatches. Explicit symbols, however, are used when precise symbol spelling
 is important so are left as is after expanding the escape sequences.
 
-Despite being literal values (techniccally), symbols do not have type suffixes
+Despite being literal values (technically), symbols do not have type suffixes
 in any of their forms. Any following identifier is simply treated as itself.
