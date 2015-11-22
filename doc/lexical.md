@@ -190,7 +190,7 @@ Examples of Unicode quotes:
 
 Sash supports Unicode identifiers, the ASCII set of characters allowed in them
 is not affected by Unicode general categories described above. As it is, ASCII
-repertoire of Sash stated here is complete and exhausive.
+repertoire of Sash stated here is complete and exhaustive.
 
 Also, Unicode support usually has several important implications for programming
 languages, namely:
@@ -219,7 +219,7 @@ kind then its normalized form is also a valid identifier of the same kind.
 
 #### 4.4.2 – Identifier stability
 
-Stability is Another important point with Unicode support. That is, once
+Stability is another important point with Unicode support. That is, once
 something is considered an identifier in a certain version of Unicode Standard,
 it should stay an identifier of the same kind in all subsequent versions.
 
@@ -304,94 +304,49 @@ TODO
 
 TODO
 
-------------------------------------------------------------------------
 
-Sash supports usage of valid Unicode in identifiers. However, the ASCII range
-is handled using Sash-specific rules, regardless of Unicode categories and
-other properties assigned to these code points. Unicode can be freely mixed
-with ASCII.
+## 5 – Delimiters
 
+Sash defines several delimiter tokens with special meaning:
 
-#### 4.3.1 Unicode words
-
-Unicode words are supported as per [_Unicode Annex #31_] [2]. Such identifiers
-are composed of a _XID_Start_ character followed by zero or more _XID_Continue_
-characters.
-
-UAX #31 provides precise definitions of XID_Start and XID_Continue properties.
-In short, an identifier starts with a letter and after that can also include
-numbers, combining modifiers, and connectors of various sorts.
-
-UAX #31 also implies _NFKC normalization_ of identifier names. Thus, there is
-no difference between `différence ` and `différence` (if you can see it).
-Again, [UAX #15] [3] provides precise rules of character normalization.
-In short, if identifiers look alike then they are considered the same.
-
-[2]: http://unicode.org/reports/tr31/
-[3]: http://unicode.org/reports/tr15/
+  - `(`, `)` — positional collections, expression groups, function calls
+  - `[`, `]` — ordered collections, indexing, type parameters, attributes
+  - `{`, `}` — unordered collections, various code and declaration blocks
+  - '.' — field access, method calls
+  - ',' — subexpression separator
+  - ';' — expression separator
+  - ':' — type declarations
+  - '::' — namespace separator
+  - `#` — multipart identifiers, attributes
 
 
-#### 4.3.2 Unicode symbols
+## 6 – Literals
 
-Unicode symbols can start with a Unicode code point of general category Pc, Pd,
-Pe, Pf, Pi, Po, Ps, Sc, Sk, Sm, So (with ASCII characters excluded from them).
-After the first character combining modifiers are also allowed.
-
-Examples of Unicode symbols:
-
-> **TODO:** examples
-
-> **TODO:** normalization of symbols
+Some Sash token denote literal values of various kinds.
 
 
-#### 4.3.3 ASCII fallback
-
-Finally, ASCII fallback for Unicode identifiers is provided so that `糖果` could
-be written as `\uFA03\u679C` if the source code is constrained to ASCII. See the
-[_Characters_] [4] section for complete syntax of Unicode escapes. (Note that
-this is _a fallback_, not a backdoor. It does not extend the set of characters
-allowed in identifiers, it does not allow mixing word and symbol characters,
-and it does not allow usage of reserved identifiers.)
-
-[4]: #8characters
-
-
-### 4.4 Reserved identifiers
-
-A number of words and symbols have reserved meaning in Sash. You cannot use them
-as identifiers. Even with the Unicode escapes.
-
-> **TODO**: the list
-
-> **TODO**: compound identifiers (?)
-
-
-## 5 Delimiters
-
-    ( ) [ ] { } , : :: ; # .
-
-> **TODO:** elaborate, extend
-
-
-## 6 Booleans
+### 6.1 – Booleans
 
 Boolean constants are `true` and `false`. These are reserved identifiers.
 
 
-## 7 Numbers
-
-### 7.1 Integers
+### 6.2 – Integer numbers
 
 Integers are typically written using decimal digits:
 
     123             -42             +9
 
-But you can use binary, octal, and hexadecimal forms if needed:
+But you may use binary, octal, and hexadecimal forms if needed:
 
-    0b01001110      0o755           0xDeadBeef
+<table>
+  <tr><td><tt>57005</tt></td>              <td>base 10</td></tr>
+  <tr><td><tt>0xDEad</tt></td>             <td>base 16</td></tr>
+  <tr><td><tt>0o157255</tt></td>           <td>base 8</td></tr>
+  <tr><td><tt>0b1101111010101101</tt></td> <td>base 2</td></tr>
+</table>
 
 
-### 7.2 Floating point
+### 6.3 – Floating-point numbers
 
 Floating-point numbers use decimal dot as a separator between the integer and
 fractional parts:
@@ -401,16 +356,6 @@ fractional parts:
 _No part_ can be omitted. One-half is written as `0.5`, not `.5`. Floating zero
 is written as `0.0`, not as `0.` or `.0`.
 
-> **Q:** Why is that so?
->
-> **A:** Because ~I said so~ it avoids making arbitrary decisions about how
-> ambiguous strings like `1.foo` and `?.0` should be parsed in the presence
-> of used-defined operators. Plus, it simplifies scanning a bit: in cases like
-> `1.___4` the scanner is not required to use backtracking to correctly choose
-> between 'a float' and 'an integer, a dot, an identifer'. And yeah, finally,
-> because I hate when people 'shorten' floating-point literals by removing
-> 'unnecessary' zeros. They _are_ necessary! They act as a marker for floats.
-
 Exponential form is also available. It permits dropping the fractional part:
 
     1.0e10          2E-10
@@ -419,7 +364,7 @@ Radix prefixes are not allowed for floating-point numbers. They are all written
 using decimal digits. No binary form is provided for floating-point numbers.
 
 
-### 7.3 Type suffixes
+### 6.4 – Type suffixes
 
 Type suffixes (`i8`, `usize`, `f32`, etc.) can be used to specify precise type
 of a number literal.
@@ -432,8 +377,14 @@ context. If the literal's type cannot be inferred due to lack of information,
 a sensible default is used (which is defined as `i32` for integers and `f64`
 for floats).
 
+Technically, any literal value (except for booleans) may have a type suffix,
+and type suffixes are defined as arbitrary word identifiers. However, only
+numbers have defined type suffixes. Using type suffix with any other literal
+values is currently a syntax error. However, they are reserved for future
+language extensions.
 
-### 7.4 Separators
+
+### 6.5 – Digit separators
 
 All numbers allow `_` to be used as a separator between digits and structural
 parts (radix prefix, number value, floating-point exponent, and type suffix):
@@ -444,120 +395,183 @@ parts (radix prefix, number value, floating-point exponent, and type suffix):
     1__2__3__4__5
 
 
-### 7.5 Vexing parses
-
-Strictly speaking, _any_ literal can have a type suffix, which can be _any_ word
-identifier. However, only numbers have defined suffixes and they are defined as
-canonical names of primitive types (that is, they are not affected by module
-import renaming). Other uses of the type suffixes are reserved for language
-expansion.
-
-This is the reason for required fractional part of floating point numbers.
-Otherwise it would be necessary to establish arbitrary rules for disambiguating
-things like `2.f32` (a number with a suffix vs. a dot operator application).
-
-> **TODO:** should it read _field access_ now?
-
-One more thing. From the lexical standpoint, the sign cannot be included into
-number literals because it is impossible for the lexer to disambiguate unary
-and binary plus and minus operators. Furthermore, remember that `_` is a valid
-character in identifiers. Thus underscore used like this: `+_2` does not mean
-a number, it is an identifier `+` followed by another identifier `_2`. We cannot
-do anything about it as unary operators in Sash are not limited to `+` and `-`.
-
-However, we can fix another problem. The separators are allowed only _between_
-the structural parts. Thus, strings like `2._0`, `2_.0`, `2_._0` are considered
-syntatically invalid numbers instead of being weirdly parsed sometimes into
-a number, and sometimes into an operator application, depending on where you
-put the underscore.
-
-> **TODO:** this is too long, and is not really necessary in user-level docs.
-> It should be shortened or removed entirely after the imlementation.
-
-
-## 8 Characters
+### 6.6 – Characters
 
 Characters are quoted with single quotes: `'x'`, including the quote character
 itself: `'''`.
 
-A character literal can include any Unicode scalar value except for Unicode
-control codes (general category Cc). Control codes can be written only using
-escapes. Surrogates cannot be placed into a character.
+A character literal can include any single Unicode scalar value except for Sash
+line endings. Newline and return characters must be escaped.
 
 Some traditional C-style escapes are supported: `'\0'` (null, U+0000), `'\t'`
-(tab, U+0009), `'\n'` (newline, U+000A), `'\r'` (return, U+000D). Any Unicode
-scalar value can also be written using explict Unicode escapes:
+(tab, U+0009), `'\n'` (newline, U+000A), `'\r'` (return, U+000D). Characters
+support string escapes `'\"'` and `'\\'` for copy-paste compatibility, but
+character literals for these can be written without the backslash as well.
+
+Finally, any Unicode scalar value can also be written using explicit Unicode
+escapes:
 
 <table>
-  <tr><td><tt>'\x12'</tt></td>    <td>exactly two hex digits</td></tr>
-  <tr><td><tt>'\u3456'</tt></td>  <td>exactly four hex digits</td></tr>
-  <tr><td><tt>'\U109ABC'</tt></td><td>exactly six hex digits</td></tr>
-  <tr><td><tt>'\u{123}'</tt></td> <td>one to six hex digits</td></tr>
+  <tr>
+    <td><tt>'\x12'</tt></td>
+    <td>exactly two hex digits, restricted to ASCII (`\x00`...`\x7F`)</td>
+  </tr>
+  <tr>
+    <td><tt>'\u{4FDD}'</tt></td>
+    <td>one to six significant hex digits, restricted to valid Unicode
+        scalar values</td>
+  </tr>
+</table>
+
+Note that we are consistently referring to _Unicode scalar values_. That is,
+characters cannot contain non-Unicode characters and surrogates. They are
+restricted to the set [U+0000, U+D7FF] ∪ [U+E000, U+10FFFF].
+
+Also, character literals are not normalized in any way and must contain a
+single Unicode code point. So keep your eye on the combining modifiers if
+you need them.
+
+
+### 6.7 – Strings
+
+Strings are quoted with double quotes: `"string"`. Double quotes themselves
+must be always escaped with a backslash: `"\""`. The backslash must also be
+escaped: `"\\"`. All character escape sequences are also supported by strings.
+
+Like characters, string content is never normalized in any way. No additional
+processing is made on strings, except for folding line breaks and expanding
+escape sequences into corresponding values.
+
+
+#### 6.7.1 – Multiline strings
+
+Line breaks can be used in strings. However, a line break in the source code
+is always represented with a single newline character `\n` in the string,
+regardless of its actual representation in the source file.
+
+Examples of multiline strings:
+
+<table>
+  <tr>
+    <th>Plain form</th>
+    <th>Escaped form</th>
+  </tr>
+  <tr>
+    <td><tt>"foo
+bar"</tt></td>
+    <td><tt>"foo\nbar"</tt></td>
+  </tr>
+  <tr>
+    <td><tt>"foo
+    bar"</tt></td>
+    <td><tt>"foo\n    bar"</tt></td>
+  </tr>
+</table>
+
+Long strings can also be broken into logical lines without actually inserting
+newline characters into them. If the `\` character immediately precedes a line
+break, it is be ignored together with the line ending as well as any leading
+whitespace on the following line:
+
+<table>
+  <tr>
+    <th>Plain form</th>
+    <th>Escaped form</th>
+  </tr>
+  <tr>
+    <td><tt>"foo\
+bar"</tt></td>
+    <td><tt>"foobar"</tt></td>
+  </tr>
 </table>
 
 
-## 9 Strings
-
-Strings are quoted with double quotes: `"string"`. Double quotes themselves
-must be escaped with a backslash: `"\""`. The backslash must also be escaped:
-`"\\"`. All character escape sequences are also supported inside strings.
-
-> **TODO:** UTF-8 in strings?
-
-
-### 9.1 Multiline strings
-
-Line breaks (and other control codes) can be used in strings. However, a line
-break in the source code is always represented with a single newline character
-`\n` in the string, regardless of its actual representation in the source.
-
-    "foo        "foo\nbar"      "foo        "foo\n    bar"
-    bar"                            bar"
-
-(As you can see, leading whitespace is also preserved.)
-
-You can also break long strings into logical lines without actually inserting
-newline characters into them. If the `\` character immediately precedes a line
-break, it is be ignored together with the line ending and any leading whitespace
-on the following line:
-
-    "foo\       "foobar"
-        bar"
-
-
-### 9.2 Raw strings
+### 6.8 – Raw strings
 
 There are also _raw strings_ which ignore escape sequences and permit writing
 double quotes without escapes. They are mostly useful for regular expressions.
+Raw strings are prefixed with an `r`:
 
-    r"/.*@.*/"      ".*@.*"
-    r"/""/"         "\"\""
+<table>
+  <tr>
+    <th>Raw string</th>
+    <th>Cooked string</th>
+  </tr>
+  <tr>
+    <td><tt>r"123"</tt></td>
+    <td><tt>"123"</tt></td>
+  </tr>
+  <tr>
+    <td><tt>r"\r\n\u{123}\"</tt></td>
+    <td><tt>"\\r\\n\\u{123}\\"</tt></td>
+  </tr>
+</table>
 
-> **TODO:** better examples
+To include double quotes into a raw string you need to pad it with sufficient
+amount of hashes `#`:
 
-Actually, you can use whatever character you want instead of `/`, except for
-the four whitespace characters (space, tab, newline, and return).
+<table>
+  <tr>
+    <th>Raw string</th>
+    <th>Cooked string</th>
+  </tr>
+  <tr>
+    <td><tt>r#"""#</tt></td>
+    <td><tt>"\""</tt></td>
+  </tr>
+  <tr>
+    <td><tt>r##"\xx""#\xx"##</tt></td>
+    <td><tt>"\\xx\"\"#\\xx"</tt></td>
+  </tr>
+</table>
 
-    r""f\"oo""      "f\\\"oo"       r"♥L♥O♥V♥E♥"        "L♥O♥V♥E"
+You can also break raw strings into multiple lines. Line endings are still
+normalized into `\n`, but the backslashes stay themselves:
 
-You can also use line breaks in raw strings. As with regular strings, they are
-converted into `\n` characters regardless of their source code representation.
+<table>
+  <tr>
+    <th>Raw string</th>
+    <th>Cooked string</th>
+  </tr>
+  <tr>
+    <td><tt>r"
+"</tt></td>
+    <td><tt>"\n"</tt></td>
+  </tr>
+  <tr>
+    <td><tt>r"\
+x"</tt></td>
+    <td><tt>"\\\nx"</tt></td>
+  </tr>
+</table>
 
-    r"|\            "\\\n  "
-      |"
 
-## 10 Symbols
+## 7 – Symbols
 
-Symbols are normally used as keywords, so symbols can be conveniently written
-as identifiers _immediately_ followed by a single `:` character:
+Sash supports _symbols_ which you may know from the Lisp family of languages.
+They are unique strings of characters similar to identifiers. Symbols are
+mostly used as _keywords_ in their **implicit form** which is a word identifier
+immediately followed by a colon (without any whitespace in between):
 
-    keyword:
+    keyword:      аргумент:     \u{53C2}\u{6570}:
 
-They can also be written explicitly, as strings prefixed with a hash `#`:
+Only word identifiers can form implicit symbols. The colon is not included into
+they symbol value. Identifiers of other kind followed by a colon are treated as
+identifiers followed by a colon.
 
-    #"foo"      #r"#"bar" "baz"#"      #""
+There is also an **explicit form** of symbols which looks like a string
+delimited with backquotes and allows any characters in it (including none).
+The backquote itself can be also included by escaping it with a backslash.
 
-Well, effectively, they _are_ strings. Only with an additional guarantee
-of shared storage for equal values, a different syntactic category and type.
+    `keyword`     `+\x32+`      `:`       ``       `\``
 
-> **TODO:** are symbols normalized as identifiers?
+Explicit symbol strings cannot span multiple lines. Newline and return can be
+included into them, but only in escaped form.
+
+Implicit symbols are preferred for keywords and their usage is similar to
+identifiers. Thus they are NFKC-normalized in order to prevent confusion and
+mismatches. Explicit symbols, however, are used when precise symbol spelling
+is important so are left as is after expanding the escape sequences.
+
+Despite being literal values (techniccally), symbols do not have type suffixes
+in any of their forms. Any following identifier is simply treated as itself.
