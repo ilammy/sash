@@ -169,8 +169,9 @@ characters, quote identifiers are always restricted to one character. This
 means that they do not coalesce when placed near each other, which helps them
 to be used in enclosing contexts without additional whitespace.
 
-There are no ASCII characters for quote identifiers. `( ) [ ] { } ' " `` would
-qualify for the role of ASCII quotes, but they already have reserved meanings.
+There are no ASCII characters for quote identifiers. <code>( ) [ ] { } ' "
+`</code> would qualify for the role of ASCII quotes, but they already have
+their own reserved meanings.
 
 Unicode quotes are formed by the following character general categories:
 
