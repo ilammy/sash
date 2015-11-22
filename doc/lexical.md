@@ -188,7 +188,11 @@ Examples of Unicode quotes:
 
 ### 4.4 – Unicode in identifiers
 
-Unicode support usually has several important implications for programming
+Sash supports Unicode identifiers, the ASCII set of characters allowed in them
+is not affected by Unicode general categories described above. As it is, ASCII
+repertoire of Sash stated here is complete and exhausive.
+
+Also, Unicode support usually has several important implications for programming
 languages, namely:
 
   - how identifiers are compared for equality
@@ -277,7 +281,7 @@ ASCII fallback allows to restrict any valid Sash program to ASCII character set
 and to convert it back to the full Unicode form if necessary. Both forms are
 semantically equivalent and introduce no differences in identifier treatment.
 Unicode identifiers are still normalized and inter-kind token boundaries are
-still detected just fine be it `` or ``.
+still detected just fine be it `ĳ+`, `ij＋`, or `\u{133}\u{ff0b}`.
 
 However, note that this is _a fallback_, not a backdoor. ASCII Unicode escapes
 do not extend allowed character sets for identifiers in any way, nor they allow
