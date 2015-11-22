@@ -186,13 +186,109 @@ Examples of Unicode quotes:
     TODO
 
 
-### 4.4 – Unicode in idenitifiers
+### 4.4 – Unicode in identifiers
 
-#### 4.4.1 – Normalization
+Unicode support usually has several important implications for programming
+languages, namely:
 
-#### 4.4.2 – Stability
+  - how identifiers are compared for equality
+  - what happens when Unicode Stardard gets updated
+  - is Unicode support required to use the language
 
-#### 4.4.3 – ASCII fallback
+
+#### 4.4.1 – Identifier normalization
+
+All identifiers in Sash are compared after being processed with _Normalization
+Form KC_ (see [Unicode Annex #15](http://unicode.org/reports/tr15/)). Also,
+_Zero-Width Non-Joiner_ and _Zero-Width Joiner_ characters are ignored when
+comparing word identifiers. This helps to fold differences between `différence`
+and `différence` (if you can see it) and avoids some security issues arising
+from visual ambiguity. However, normalization does not eliminate them
+completely (e.g., `foo` and `foо` are still different).
+
+In order to support NFKC normalization character sets of identifiers are not
+exactly equal to unions of general categories described above. Several
+characters are excluded from them to make the character sets closed over NFKC.
+That is, to ensure that if a character sequence is an identifier of a certain
+kind then its normalized form is also a valid identifier of the same kind.
+
+
+#### 4.4.2 – Identifier stability
+
+Stability is Another important point with Unicode support. That is, once
+something is considered an identifier in a certain version of Unicode Standard,
+it should stay an identifier of the same kind in all subsequent versions.
+
+This requirement can be trivially satisfied if we ensure that the sets of
+identifier characters are only expanded when a new Unicode version comes out.
+No character must change its kind affinity once it was determined. General
+categories of Unicode characters are kept as stable as possible, but they are
+not guaranteed to be immutable. In fact, there are multiple characters which
+switched their categories in an incompatible way.
+
+The aforementioned issue is resolved by using so called _grandfathered
+characters_: additional sets of exceptional characters which are added to the
+normal character sets in order to satisfy the stability requirements. For
+example, U+212E ESTIMATED SYMBOL (℮) has general category _So_ (other symbols)
+in Unicode 8.0.0. This should have placed it into mark character set, but in
+Unicode 2.0 this character was considered to be lowercase letter. Thus it is
+included into _Other_ID_Start_ — the grandfathered set of the initial word
+characters — and ℮ is considered a valid word character.
+
+Here is a full list of current grandfathered sets for Sash identifiers:
+
+  - **words:**
+    - additional starter characters:
+      - U+2118 SCRIPT CAPITAL P (℘)
+      - U+212E ESTIMATED SYMBOL (℮)
+    - additional continuations (includes all starters):
+      - U+00B7 MIDDLE DOT (·)
+      - U+0387 GREEK ANO TELEIA (·)
+      - U+1369 ETHIOPIC DIGIT ONE (፩)
+      - U+136A ETHIOPIC DIGIT TWO (፪)
+      - U+136B ETHIOPIC DIGIT THREE (፫)
+      - U+136C ETHIOPIC DIGIT FOUR (፬)
+      - U+136D ETHIOPIC DIGIT FIVE (፭)
+      - U+136E ETHIOPIC DIGIT SIX (፮)
+      - U+136F ETHIOPIC DIGIT SEVEN (፯)
+      - U+1370 ETHIOPIC DIGIT EIGHT (፰)
+      - U+1371 ETHIOPIC DIGIT NINE (፱)
+      - U+19DA NEW TAI LUE THAM DIGIT ONE (᧚)
+  - **marks:** none
+  - **quotes:** none
+
+We also need to ensure that no identifier is a valid substring of an identifier
+of different kind. General categories of starter characters of identifier kinds
+do not intersect so grandfathered characters are the only possible source of
+problems here. In order to avoid these problems any special grandfathered
+characters must be excluded from character sets of all other identifer kinds.
+
+
+#### 4.4.3 – ASCII compatibility
+
+In certain cases the source code is necessarily restricted to ASCII by some
+external protocol (like SMTP). Sash supports ASCII fallback for Unicode
+characters in order to deal with such restrictions. With it, `糖果` can be
+written in the form of Unicode escapes: `\u{FA03}\u{679C}`. The same syntax
+is also supported by strings, characters, and symbols which all allow Unicode
+usage as well.
+
+ASCII fallback allows to restrict any valid Sash program to ASCII character set
+and to convert it back to the full Unicode form if necessary. Both forms are
+semantically equivalent and introduce no differences in identifier treatment.
+Unicode identifiers are still normalized and inter-kind token boundaries are
+still detected just fine be it `` or ``.
+
+However, note that this is _a fallback_, not a backdoor. ASCII Unicode escapes
+do not extend allowed character sets for identifiers in any way, nor they allow
+to use reserved identifiers. Any _valid_ program is completely unchanged when
+any or all non-ASCII characters in it are coverted to Unicode escapes and back.
+
+ASCII escapes are considered an exceptional form of identifier characters. Thus
+it is not possible to encode any ASCII characters with Unicode escapes. There
+are no such restrictions for characters, strings, and (explicit) symbols which
+can all use C escapes (`\n`), byte escapes (`\x32`), and Unicode escapes for
+ASCII range (`\u{6F}`).
 
 
 ### 4.5 – Multipart identifiers
