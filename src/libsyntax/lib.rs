@@ -12,4 +12,6 @@
 
 extern crate unicode;
 
+pub mod diagnostics;
 pub mod lexer;
+pub mod tokens;

@@ -4,108 +4,19 @@
 // This file may be copied, distributed, and modified only in accordance
 // with the terms specified by this license.
 
+//! Sash lexical analyzer.
+//!
+//! This module contains definition and implementation of the _lexical analyzer_ which breaks
+//! a stream of characters into tokens.
+
 use std::char;
+
+use tokens::{Token};
+use diagnostics::{Span, SpanReporter};
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // Helper data structures
 //
-
-/// Tokens recognized by the scanner
-#[derive(Debug, PartialEq)]
-pub enum Token {
-    /// Marker token denoting the end-of-token-stream condition
-    EOF,
-
-    /// Non-significant whitespace
-    Whitespace,
-
-    /// Non-significant comment
-    Comment,
-
-    /// Documentation comment
-    DocComment,
-
-    /// Left (opening) parenthesis `(`
-    Lparen,
-
-    /// Right (closing) parenthesis `)`
-    Rparen,
-
-    /// Left (opening) bracket `[`
-    Lbrack,
-
-    /// Right (closing) bracket `]`
-    Rbrack,
-
-    /// Left (opening) brace `{`
-    Lbrace,
-
-    /// Right (closing) brace `}`
-    Rbrace,
-
-    /// Dot `.`
-    Dot,
-
-    /// Comma `,`
-    Comma,
-
-    /// Colon `:`
-    Colon,
-
-    /// Double colon `::`
-    Dualcolon,
-
-    /// Semicolon `;`
-    Semicolon,
-
-    /// Hash `#`
-    Hash,
-
-    /// Integer literal
-    Integer,
-
-    /// Float literal
-    Float,
-
-    /// A single character
-    Character,
-
-    /// A string of characters
-    String,
-
-    /// A raw string of characters
-    RawString,
-
-    /// An identifier (of any kind)
-    Identifier,
-
-    /// An implicit symbol
-    ImplicitSymbol,
-
-    /// An explicit symbol
-    ExplicitSymbol,
-
-    /// Marker token denoting invalid character sequences
-    Unrecognized,
-}
-
-/// Span of a token
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Span {
-    /// Byte offset of the first character of the span
-    pub from: usize,
-
-    /// Byte offset of the first character following the span (after the last character)
-    pub to: usize,
-}
-
-impl Span {
-    /// Make a new span with given bounds
-    fn new(from: usize, to: usize) -> Span {
-        assert!(from <= to);
-        Span { from: from, to: to }
-    }
-}
 
 /// Scanned token with extents information
 pub struct ScannedToken {
@@ -114,23 +25,6 @@ pub struct ScannedToken {
 
     /// Span of the token
     pub span: Span,
-}
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-// Diagnostic reporting
-//
-
-/// Reporter interface
-///
-/// Reporters are used to... report various errors, warnings, suggestions, threats, etc.
-/// which are encountered while processing the source code. SpanReporter reports such things
-/// in relation to some span of the source.
-pub trait SpanReporter<'a> {
-    /// Report an error
-    fn error(&self, span: Span, message: &'a str);
-
-    /// Report a warning
-    fn warning(&self, span: Span, message: &'a str);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -1817,6 +1711,8 @@ impl<'a> StringScanner<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokens::{Token};
+    use diagnostics::{Span, SpanReporter};
 
     // TODO: macros to lower the amount of boilerplate and arbitrary calculations
 
