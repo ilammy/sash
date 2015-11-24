@@ -8,81 +8,81 @@
 //!
 //! This module contains definitions of various tokens recognized and processed by Sash parser.
 
-/// Tokens recognized by the scanner
+/// Types of tokens recognized by the scanner.
 #[derive(Debug, PartialEq)]
 pub enum Token {
-    /// Marker token denoting the end-of-token-stream condition
+    /// Marker token denoting the end-of-token-stream condition.
     EOF,
 
-    /// Non-significant whitespace
+    /// Non-significant whitespace.
     Whitespace,
 
-    /// Non-significant comment
+    /// Non-significant comment.
     Comment,
 
-    /// Documentation comment
+    /// Documentation comment.
     DocComment,
 
-    /// Left (opening) parenthesis `(`
+    /// Left (opening) parenthesis `(`.
     Lparen,
 
-    /// Right (closing) parenthesis `)`
+    /// Right (closing) parenthesis `)`.
     Rparen,
 
-    /// Left (opening) bracket `[`
+    /// Left (opening) bracket `[`.
     Lbrack,
 
-    /// Right (closing) bracket `]`
+    /// Right (closing) bracket `]`.
     Rbrack,
 
-    /// Left (opening) brace `{`
+    /// Left (opening) brace `{`.
     Lbrace,
 
-    /// Right (closing) brace `}`
+    /// Right (closing) brace `}`.
     Rbrace,
 
-    /// Dot `.`
+    /// Dot `.`.
     Dot,
 
-    /// Comma `,`
+    /// Comma `,`.
     Comma,
 
-    /// Colon `:`
+    /// Colon `:`.
     Colon,
 
-    /// Double colon `::`
+    /// Double colon `::`.
     Dualcolon,
 
-    /// Semicolon `;`
+    /// Semicolon `;`.
     Semicolon,
 
-    /// Hash `#`
+    /// Hash `#`.
     Hash,
 
-    /// Integer literal
+    /// An integer literal.
     Integer,
 
-    /// Float literal
+    /// A floating-point literal.
     Float,
 
-    /// A single character
+    /// A single character.
     Character,
 
-    /// A string of characters
+    /// A string of characters.
     String,
 
-    /// A raw string of characters
+    /// A raw string of characters.
     RawString,
 
-    /// An identifier (of any kind)
+    /// An identifier (of any kind).
     Identifier,
 
-    /// An implicit symbol
+    /// An implicit symbol.
     ImplicitSymbol,
 
-    /// An explicit symbol
+    /// An explicit symbol.
     ExplicitSymbol,
 
-    /// Marker token denoting invalid character sequences
+    /// Marker token denoting invalid character sequences.
     Unrecognized,
 }
