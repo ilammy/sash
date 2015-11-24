@@ -906,6 +906,8 @@ pub mod sash_identifiers {
     /// A character can be tested for categories like this:
     ///
     /// ```
+    /// use unicode::sash_identifiers::{category_of, WORD_START, WORD_CONTINUE};
+    ///
     /// assert!(category_of('a').is(WORD_START | WORD_CONTINUE));
     /// ```
     #[derive(Clone, Copy, Eq, PartialEq, Hash)]

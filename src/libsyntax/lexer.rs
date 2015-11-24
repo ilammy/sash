@@ -4,140 +4,34 @@
 // This file may be copied, distributed, and modified only in accordance
 // with the terms specified by this license.
 
+//! Sash lexical analyzer.
+//!
+//! This module contains definition and implementation of the _lexical analyzer_ which breaks
+//! a stream of characters into tokens.
+
 use std::char;
+
+use tokens::{Token};
+use diagnostics::{Span, SpanReporter};
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // Helper data structures
 //
 
-/// Tokens recognized by the scanner
-#[derive(Debug, PartialEq)]
-pub enum Token {
-    /// Marker token denoting the end-of-token-stream condition
-    EOF,
-
-    /// Non-significant whitespace
-    Whitespace,
-
-    /// Non-significant comment
-    Comment,
-
-    /// Documentation comment
-    DocComment,
-
-    /// Left (opening) parenthesis `(`
-    Lparen,
-
-    /// Right (closing) parenthesis `)`
-    Rparen,
-
-    /// Left (opening) bracket `[`
-    Lbrack,
-
-    /// Right (closing) bracket `]`
-    Rbrack,
-
-    /// Left (opening) brace `{`
-    Lbrace,
-
-    /// Right (closing) brace `}`
-    Rbrace,
-
-    /// Dot `.`
-    Dot,
-
-    /// Comma `,`
-    Comma,
-
-    /// Colon `:`
-    Colon,
-
-    /// Double colon `::`
-    Dualcolon,
-
-    /// Semicolon `;`
-    Semicolon,
-
-    /// Hash `#`
-    Hash,
-
-    /// Integer literal
-    Integer,
-
-    /// Float literal
-    Float,
-
-    /// A single character
-    Character,
-
-    /// A string of characters
-    String,
-
-    /// A raw string of characters
-    RawString,
-
-    /// An identifier (of any kind)
-    Identifier,
-
-    /// An implicit symbol
-    ImplicitSymbol,
-
-    /// An explicit symbol
-    ExplicitSymbol,
-
-    /// Marker token denoting invalid character sequences
-    Unrecognized,
-}
-
-/// Span of a token
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Span {
-    /// Byte offset of the first character of the span
-    pub from: usize,
-
-    /// Byte offset of the first character following the span (after the last character)
-    pub to: usize,
-}
-
-impl Span {
-    /// Make a new span with given bounds
-    fn new(from: usize, to: usize) -> Span {
-        assert!(from <= to);
-        Span { from: from, to: to }
-    }
-}
-
-/// Scanned token with extents information
+/// A scanned token with extents information.
 pub struct ScannedToken {
-    /// The token itself
+    /// The token itself.
     pub tok: Token,
 
-    /// Span of the token
+    /// Span of the token.
     pub span: Span,
-}
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-// Diagnostic reporting
-//
-
-/// Reporter interface
-///
-/// Reporters are used to... report various errors, warnings, suggestions, threats, etc.
-/// which are encountered while processing the source code. SpanReporter reports such things
-/// in relation to some span of the source.
-pub trait SpanReporter<'a> {
-    /// Report an error
-    fn error(&self, span: Span, message: &'a str);
-
-    /// Report a warning
-    fn warning(&self, span: Span, message: &'a str);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // The scanner
 //
 
-/// Scanner interface
+/// Scanner interface.
 ///
 /// A scanner splits a string of characters into tokens. It does not process the characters it
 /// sees; it only recognizes the tokens and provides their general category and extents in the
@@ -146,17 +40,18 @@ pub trait SpanReporter<'a> {
 /// the intended meaning, report any encountered errors, and will carry on scanning if possible.
 /// However, a scanner will never reconsider its decisions about what it saw and where it was.
 pub trait Scanner<'a> {
-    /// Check whether the end of token stream has been reached.
+    /// Checks whether the end of token stream has been reached.
     /// If it is reached, the scanner will produce only `Token::EOF`.
     fn at_eof(&self) -> bool;
 
-    /// Extract the next token from the stream.
+    /// Extracts and returns the next token from the stream. Returns `Token::EOF`
+    /// if the end of stream has been reached and no more tokens are available.
     fn next_token(&mut self) -> ScannedToken;
 }
 
-/// A scanner for strings
+/// A scanner for strings.
 pub struct StringScanner<'a> {
-    /// The string being scanned
+    /// The string being scanned.
     buf: &'a str,
 
     // Scanning state
@@ -172,26 +67,30 @@ pub struct StringScanner<'a> {
     //
     //     cur == Some('f')           cur == Some('ä')              cur == None
 
-    /// Most recently read character (located at `prev_pos` in the stream)
+    /// Most recently read character (located at `prev_pos` in the stream).
     cur: Option<char>,
 
-    /// Byte offset of the next character to be read (after `cur`)
+    /// Byte offset of the next character to be read (after `cur`).
     pos: usize,
 
-    /// Byte offset of the last character that was read (`cur`)
+    /// Byte offset of the last character that was read (`cur`).
     prev_pos: usize,
 
+    //
     // Temporaries for the token currently being scanned
+    //
 
-    /// First character of `tok`
+    /// First character of `tok`.
     start: usize,
 
-    /// Last character of `tok`
+    /// Last character of `tok`.
     end: usize,
 
+    //
     // Diagnostic reporting
+    //
 
-    /// Our designed responsible for diagnostic processing
+    /// Our designated responsible for diagnostic processing.
     report: &'a SpanReporter<'a>,
 }
 
@@ -205,73 +104,9 @@ impl<'a> Scanner<'a> for StringScanner<'a> {
     }
 }
 
-const REPLACEMENT_CHARACTER: char = '\u{FFFD}';
-
-/// Indicator values used in scanning character literals. These are returned by
-/// `StringScanner::scan_one_character_of_character()` when the next character
-/// is not a regular character of a literal.
-enum CharacterSpecials {
-    /// Literal single quote encountered. It has not been scanned over yet.
-    SingleQuote,
-
-    /// Unexpected terminator (a line ending or the end of stream) encountered.
-    /// The line ending has not been scanned over yet.
-    UnexpectedTerminator,
-}
-
-/// Indicator values used in scanning string literals. These are returned by
-/// `StringScanner::scan_one_character_of_string()` when the next character
-/// is not a regular character of a literal.
-enum StringSpecials {
-    /// Literal double quote encountered. It has not been scanned over yet.
-    DoubleQuote,
-
-    /// A backslash-escaped line ending has been skipped over, yielding no
-    /// characters for the string.
-    SkippedEscapedLineEnding,
-
-    /// Unexpected terminator (the end of stream) encountered.
-    UnexpectedTerminator,
-}
-
-/// Indicator values used in scanning explicit symbols. These are returned by
-/// `StringScanner::scan_one_character_of_symbol()` when the next character
-/// is not a regular character of a symbol.
-enum SymbolSpecials {
-    /// Literal backquote encountered. It has not been scanned over yet.
-    Backquote,
-
-    /// Unexpected terminator (a line ending or the end of stream) encountered.
-    /// The line ending has not been scanned over yet.
-    UnexpectedTerminator,
-}
-
-/// Indicator values used in scanning identifiers. These are returned by
-/// `StringScanner::scan_one_character_of_identifier()` when the next character
-/// is not a regular character of an identifier.
-enum IdentifierSpecials {
-    /// Literal dot encountered. It has not been scanned over yet.
-    Dot,
-
-    /// Literal decimal digit encountered. It has not been scanned over yet.
-    Digit,
-
-    /// Definite identifier terminator encountered (such as line ending, the
-    /// end of stream, a comment starting sequence (`//` or `/*`), or some
-    /// ASCII character that is not used in identifiers, like `[` or ':').
-    /// The terminator character has not been scanned over yet.
-    Terminator,
-
-    /// Scanned over an invalid Unicode escape which did not produce
-    /// a reliable character.
-    IncorrectUnicodeEscape,
-
-    /// Scanned over a Unicode escape representing an ASCII character.
-    AsciiUnicodeEscape,
-}
-
 impl<'a> StringScanner<'a> {
-    /// Make a new scanner for a given string
+    /// Makes a new scanner for the given string which will report scanning errors
+    /// to the given reporter.
     pub fn new<'b>(s: &'b str, reporter: &'b SpanReporter<'b>) -> StringScanner<'b> {
         let mut scanner = StringScanner {
             buf: s,
@@ -283,7 +118,7 @@ impl<'a> StringScanner<'a> {
         scanner
     }
 
-    /// Read the next character and update `cur`, `pos`, `prev_pos`
+    /// Read the next character and update `cur`, `pos`, `prev_pos`.
     fn read(&mut self) {
         self.prev_pos = self.pos;
         self.cur = self.peek();
@@ -304,17 +139,17 @@ impl<'a> StringScanner<'a> {
         self.prev_pos = prev_pos;
     }
 
-    /// Peek the next character without updating anything
+    /// Peek the next character without updating anything.
     fn peek(&self) -> Option<char> {
         self.buf[self.pos..].chars().nth(0)
     }
 
-    /// Peek the character after the next without updating anything
+    /// Peek the character after the next one without updating anything.
     fn peekpeek(&self) -> Option<char> {
         self.buf[self.pos..].chars().nth(1)
     }
 
-    /// Scan the next token from the stream
+    /// Extract the next token from the stream.
     fn next(&mut self) -> ScannedToken {
         if self.at_eof() {
             return ScannedToken {
@@ -324,8 +159,22 @@ impl<'a> StringScanner<'a> {
         }
 
         self.start = self.prev_pos;
+        let tok = self.scan_token();
+        self.end = self.prev_pos;
 
-        let tok = match self.cur.unwrap() {
+        assert!(tok != Token::EOF);
+
+        return ScannedToken {
+            tok: tok,
+            span: Span::new(self.start, self.end)
+        };
+    }
+
+    /// Scan over the next token.
+    fn scan_token(&mut self) -> Token {
+        assert!(!self.at_eof());
+
+        match self.cur.unwrap() {
             ' ' | '\t' | '\n' | '\r' => {
                 self.scan_whitespace()
             }
@@ -385,19 +234,10 @@ impl<'a> StringScanner<'a> {
             _ => {
                 self.scan_identifier_or_symbol()
             }
-        };
-
-        self.end = self.prev_pos;
-
-        assert!(tok != Token::EOF);
-
-        return ScannedToken {
-            tok: tok,
-            span: Span::new(self.start, self.end)
-        };
+        }
     }
 
-    /// Scan over a sequence of whitespace
+    /// Scan over a sequence of whitespace.
     fn scan_whitespace(&mut self) -> Token {
         while !self.at_eof() {
             match self.cur.unwrap() {
@@ -408,8 +248,9 @@ impl<'a> StringScanner<'a> {
         return Token::Whitespace;
     }
 
-    /// Scan over a line comment
+    /// Scan over a line comment.
     fn scan_line_comment(&mut self) -> Token {
+        // Line comments start with two consecutive slashes
         assert!(self.cur == Some('/') && self.peek() == Some('/'));
         self.read();
         self.read();
@@ -420,31 +261,31 @@ impl<'a> StringScanner<'a> {
 
         while !self.at_eof() {
             match self.cur.unwrap() {
+                // Stop scanning at the first line ending, no matter what
                 '\n' => {
                     self.read();
                     break;
                 }
-                '\r' => {
-                    match self.peek() {
-                        Some('\n') => {
-                            self.read();
-                            self.read();
-                            break;
-                        }
-                        _ => {
-                            if doc_comment {
-                                self.report.error(Span::new(self.prev_pos, self.pos),
-                                    "Bare CR characters are not allowed in documentation \
-                                     comments");
-                            } else {
-                                self.report.warning(Span::new(self.prev_pos, self.pos),
-                                    "Bare CR character encountered in a line comment. \
-                                     Did you mean Windows line ending, CRLF?");
-                            }
-                            self.read();
-                        }
-                    }
+                '\r' if self.peek() == Some('\n') => {
+                    self.read();
+                    self.read();
+                    break;
                 }
+                // Report bare CR characters as they may have meant to be line endings,
+                // but are not treated as such in Sash.
+                '\r' => {
+                    if doc_comment {
+                        self.report.error(Span::new(self.prev_pos, self.pos),
+                            "Bare CR characters are not allowed in documentation \
+                             comments");
+                    } else {
+                        self.report.warning(Span::new(self.prev_pos, self.pos),
+                            "Bare CR character encountered in a line comment. \
+                             Did you mean Windows line ending, CRLF?");
+                    }
+                    self.read();
+                }
+                // Skip over anything else, we're scanning a comment
                 _ => { self.read(); }
             }
         }
@@ -454,6 +295,7 @@ impl<'a> StringScanner<'a> {
 
     /// Scan a block comment.
     fn scan_block_comment(&mut self) -> Token {
+        // Block comments start with a slash followed by an asterisk
         assert!(self.cur == Some('/') && self.peek() == Some('*'));
         self.read();
         self.read();
@@ -467,35 +309,30 @@ impl<'a> StringScanner<'a> {
 
         while !self.at_eof() {
             match self.cur.unwrap() {
-                '*' => {
+                // Block closure, scan over it and maybe stop scanning the comment
+                '*' if self.peek() == Some('/') => {
                     self.read();
-                    match self.cur {
-                        Some('/') => {
-                            self.read();
-                            nesting_level -= 1;
-                            if nesting_level == 0 {
-                                break;
-                            }
-                        }
-                        _ => { }
+                    self.read();
+                    nesting_level -= 1;
+                    if nesting_level == 0 {
+                        break;
                     }
                 }
-                '/' => {
+                // A new block is opened, scan over it and bump the nesting level
+                '/' if self.peek() == Some('*') => {
                     self.read();
-                    match self.cur {
-                        Some('*') => {
-                            self.read();
-                            nesting_level += 1;
-                        }
-                        _ => { }
-                    }
+                    self.read();
+                    nesting_level += 1;
                 }
+                // Report bare CR characters as they may have meant to be line endings,
+                // but are not treated as such in Sash.
                 '\r' if doc_comment && self.peek() != Some('\n') => {
                     self.report.error(Span::new(self.prev_pos, self.pos),
                         "Bare CR characters are not allowed in documentation \
                          comments");
                     self.read();
                 }
+                // Skip over anything else, we're scanning a comment
                 _ => { self.read(); }
             }
         }
@@ -517,10 +354,10 @@ impl<'a> StringScanner<'a> {
         return if doc_comment { Token::DocComment } else { Token::Comment };
     }
 
-    /// Scan over any number
+    /// Scan over any number literal.
     fn scan_number(&mut self) -> Token {
         // Okay, first of all, numbers start with a decimal digit
-        assert!(StringScanner::is_digit(self.cur.unwrap(), 10));
+        assert!(is_digit(self.cur.unwrap(), 10));
 
         // And then they have some digits as their integer part
         let (base, digits) = match self.cur.unwrap() {
@@ -555,7 +392,7 @@ impl<'a> StringScanner<'a> {
             let c = self.peek().unwrap_or('\0');
 
             // ... if it is followed by another (decimal) integer
-            if StringScanner::is_digit(c, 10) || c == '_' {
+            if is_digit(c, 10) || c == '_' {
                 self.read();
                 self.scan_float_fractional_part();
                 integer = false;
@@ -572,7 +409,7 @@ impl<'a> StringScanner<'a> {
         if self.cur == Some('e') || self.cur == Some('E') {
             let c = self.peek().unwrap_or('\0');
 
-            if StringScanner::is_digit(c, 10) || c == '_' {
+            if is_digit(c, 10) || c == '_' {
                 // An 'e' followed by a number is an exponent
                 self.read();
                 self.scan_float_exponent();
@@ -583,7 +420,7 @@ impl<'a> StringScanner<'a> {
                 // with '+' or '-' being a part of some mark-identifier that follows.
                 let c = self.peekpeek().unwrap_or('\0');
 
-                if StringScanner::is_digit(c, 10) || c == '_' {
+                if is_digit(c, 10) || c == '_' {
                     self.read();
                     self.read();
                     self.scan_float_exponent();
@@ -606,7 +443,7 @@ impl<'a> StringScanner<'a> {
         return if integer { Token::Integer } else { Token::Float };
     }
 
-    /// Scan over a sequence of digits
+    /// Scan over a sequence of digits.
     ///
     /// Digits of `base` are valid. Digits of `allowed` base are scanned over,
     /// but they are reported as erroneous if they are not fitting for `base`.
@@ -622,8 +459,8 @@ impl<'a> StringScanner<'a> {
             let c = self.cur.unwrap();
 
             if c != '_' {
-                if !StringScanner::is_digit(c, base) {
-                    if StringScanner::is_digit(c, allowed) {
+                if !is_digit(c, base) {
+                    if is_digit(c, allowed) {
                         self.report.error(Span::new(self.prev_pos, self.pos),
                             "Unexpected digit"); // TODO: better message
                     } else {
@@ -639,22 +476,9 @@ impl<'a> StringScanner<'a> {
         return digits;
     }
 
-    /// Check whether `c` is a valid digit of base `base`
-    fn is_digit(c: char, base: u32) -> bool {
-        match base {
-             2 => {  ('0' <= c) && (c <= '1') }
-             8 => {  ('0' <= c) && (c <= '7') }
-            10 => {  ('0' <= c) && (c <= '9') }
-            16 => { (('0' <= c) && (c <= '9')) ||
-                    (('a' <= c) && (c <= 'f')) ||
-                    (('A' <= c) && (c <= 'F')) }
-             _ => { panic!("invalid numeric base {}", base); }
-        }
-    }
-
-    /// Scan over a fractional part of a floating-point literal
+    /// Scan over a fractional part of a floating-point literal.
     fn scan_float_fractional_part(&mut self) {
-        assert!(StringScanner::is_digit(self.cur.unwrap(), 10) || self.cur == Some('_'));
+        assert!(is_digit(self.cur.unwrap(), 10) || self.cur == Some('_'));
 
         let fractional_start = self.prev_pos;
         let fractional_digits = self.scan_digits(10, 10);
@@ -665,9 +489,9 @@ impl<'a> StringScanner<'a> {
         }
     }
 
-    /// Scan over an exponent part of a floating-point literal
+    /// Scan over an exponent part of a floating-point literal.
     fn scan_float_exponent(&mut self) {
-        assert!(StringScanner::is_digit(self.cur.unwrap(), 10) || self.cur == Some('_'));
+        assert!(is_digit(self.cur.unwrap(), 10) || self.cur == Some('_'));
 
         let exponent_start = self.prev_pos;
         let exponent_digits = self.scan_digits(10, 10);
@@ -678,9 +502,9 @@ impl<'a> StringScanner<'a> {
         }
     }
 
-    /// Scan over a single character literal
+    /// Scan over a single character literal.
     fn scan_character_literal(&mut self) -> Token {
-        use self::CharacterSpecials::*;
+        use self::CharacterSpecials::{SingleQuote, UnexpectedTerminator};
 
         // A character literal is a single quote...
         assert!(self.cur == Some('\''));
@@ -754,9 +578,9 @@ impl<'a> StringScanner<'a> {
         return Token::Character;
     }
 
-    /// Scan over a string literal
+    /// Scan over a string literal.
     fn scan_string(&mut self) -> Token {
-        use self::StringSpecials::*;
+        use self::StringSpecials::{DoubleQuote, SkippedEscapedLineEnding, UnexpectedTerminator};
 
         // Strings start with a double quote...
         assert!(self.cur == Some('"'));
@@ -791,9 +615,9 @@ impl<'a> StringScanner<'a> {
         return Token::String;
     }
 
-    /// Scan over an explicit symbol
+    /// Scan over an explicit symbol.
     fn scan_explicit_symbol(&mut self) -> Token {
-        use self::SymbolSpecials::*;
+        use self::SymbolSpecials::{Backquote, UnexpectedTerminator};
 
         // Symbols start with a backquote...
         assert!(self.cur == Some('`'));
@@ -823,12 +647,15 @@ impl<'a> StringScanner<'a> {
         return Token::ExplicitSymbol;
     }
 
-    /// Scan over a single character or escape sequence for a character literal. Returns an Ok
-    /// character if it was scanned successfully, or a special indicator value if there was no
-    /// character to scan. Note that there is a difference between 'successfully scanned over
-    /// a character or an escape sequence' and 'scanned over a correct and valid character token'.
+    /// Scan over a single character or escape sequence for a character literal.
+    ///
+    /// Returns an Ok character if it was scanned successfully, or a special indicator value
+    /// if there was no character to scan. Note that there is a difference between 'successfully
+    /// scanned over a character or an escape sequence' and 'scanned over a correct and valid
+    /// character token'.
     fn scan_one_character_of_character(&mut self) -> Result<char, CharacterSpecials> {
-        use self::CharacterSpecials::*;
+        use self::CharacterSpecials::{SingleQuote, UnexpectedTerminator};
+
         match self.cur {
             // Backslash is a marker of escape sequences
             Some('\\') => {
@@ -872,12 +699,15 @@ impl<'a> StringScanner<'a> {
         }
     }
 
-    /// Scan over a single character or escape sequence for a string literal. Returns an Ok
-    /// character if it was scanned successfully, or a special indicator value if there was no
-    /// character to scan. Note that there is a difference between 'successfully scanned over
-    /// a character or an escape sequence' and 'scanned over a correct and valid string token'.
+    /// Scan over a single character or escape sequence for a string literal.
+    ///
+    /// Returns an Ok character if it was scanned successfully, or a special indicator value
+    /// if there was no character to scan. Note that there is a difference between 'successfully
+    /// scanned over a character or an escape sequence' and 'scanned over a correct and valid
+    /// string token'.
     fn scan_one_character_of_string(&mut self) -> Result<char, StringSpecials> {
-        use self::StringSpecials::*;
+        use self::StringSpecials::{DoubleQuote, UnexpectedTerminator};
+
         match self.cur {
             // Backslash is a marker of escape sequences
             Some('\\') => {
@@ -920,12 +750,15 @@ impl<'a> StringScanner<'a> {
         }
     }
 
-    /// Scan over a single character or escape sequence for an explicit symbol. Returns an Ok
-    /// character if it was scanned successfully, or a special indicator value if there was
-    /// no character to scan. Note that there is a difference between 'successfully scanned over
-    /// a character or an escape sequence' and 'scanned over a correct and valid symbol token'.
+    /// Scan over a single character or escape sequence for an explicit symbol.
+    ///
+    /// Returns an Ok character if it was scanned successfully, or a special indicator value
+    /// if there was no character to scan. Note that there is a difference between 'successfully
+    /// scanned over a character or an escape sequence' and 'scanned over a correct and valid
+    /// symbol token'.
     fn scan_one_character_of_symbol(&mut self) -> Result<char, SymbolSpecials> {
-        use self::SymbolSpecials::*;
+        use self::SymbolSpecials::{Backquote, UnexpectedTerminator};
+
         match self.cur {
             // Backslash is a marker of escape sequences
             Some('\\') => {
@@ -970,12 +803,14 @@ impl<'a> StringScanner<'a> {
         }
     }
 
-    /// Scan over a single character or escape sequence for an identifier. Returns an Ok character
-    /// if it was scanned successfully, or a special indicator value if there was no character to
-    /// scan. Note that there is a difference between 'successfully scanned over a character or
-    /// an escape sequence' and 'scanned over a correct and valid identifier'.
+    /// Scan over a single character or escape sequence for an identifier.
+    /// Returns an Ok character if it was scanned successfully, or a special indicator value
+    /// if there was no character to scan. Note that there is a difference between 'successfully
+    /// scanned over a character or an escape sequence' and 'scanned over a correct and valid
+    /// identifier'.
     fn scan_one_character_of_identifier(&mut self) -> Result<char, IdentifierSpecials> {
-        use self::IdentifierSpecials::*;
+        use self::IdentifierSpecials::{Terminator, Dot, Digit};
+
         match self.cur {
             // Backslash is a marker of escape sequences
             Some('\\') => {
@@ -1015,8 +850,10 @@ impl<'a> StringScanner<'a> {
         }
     }
 
-    /// Scan over an escape sequence allowed in character literals. Returns an Ok value denoted
-    /// by the sequence (which is not guaranteed to be accurate), or a special indicator value.
+    /// Scan over an escape sequence allowed in character literals.
+    ///
+    /// Returns an Ok value denoted by the sequence (which is not guaranteed to be accurate),
+    /// or a special indicator value.
     fn scan_character_escape_sequence(&mut self) -> Result<char, CharacterSpecials> {
         // All escape sequences start with a backslash
         assert!(self.cur == Some('\\'));
@@ -1066,10 +903,12 @@ impl<'a> StringScanner<'a> {
         }
     }
 
-    /// Scan over an escape sequence allowed in string literals. Returns an Ok value denoted
-    /// by the sequence (which is not guaranteed to be accurate), or a special indicator value.
+    /// Scan over an escape sequence allowed in string literals.
+    ///
+    /// Returns an Ok value denoted by the sequence (which is not guaranteed to be accurate),
+    /// or a special indicator value.
     fn scan_string_escape_sequence(&mut self) -> Result<char, StringSpecials> {
-        use self::StringSpecials::*;
+        use self::StringSpecials::{SkippedEscapedLineEnding, UnexpectedTerminator};
 
         // All escape sequences start with a backslash
         assert!(self.cur == Some('\\'));
@@ -1127,10 +966,12 @@ impl<'a> StringScanner<'a> {
         }
     }
 
-    /// Scan over an escape sequence allowed in explicit symbols. Returns an Ok value denoted
-    /// by the sequence (which is not guaranteed to be accurate), or a special indicator value.
+    /// Scan over an escape sequence allowed in explicit symbols.
+    ///
+    /// Returns an Ok value denoted by the sequence (which is not guaranteed to be accurate),
+    /// or a special indicator value.
     fn scan_symbol_escape_sequence(&mut self) -> Result<char, SymbolSpecials> {
-        use self::SymbolSpecials::*;
+        use self::SymbolSpecials::{UnexpectedTerminator};
 
         // All escape sequences start with a backslash
         assert!(self.cur == Some('\\'));
@@ -1182,10 +1023,12 @@ impl<'a> StringScanner<'a> {
         }
     }
 
-    /// Scan over an escape sequence allowed in identifiers. Returns an Ok value denoted by
-    /// the sequence (which is not guaranteed to be accurate), or a special indicator value.
+    /// Scan over an escape sequence allowed in identifiers.
+    ///
+    /// Returns an Ok value denoted by the sequence (which is not guaranteed to be accurate),
+    /// or a special indicator value.
     fn scan_identifier_escape_sequence(&mut self) -> Result<char, IdentifierSpecials> {
-        use self::IdentifierSpecials::*;
+        use self::IdentifierSpecials::{IncorrectUnicodeEscape, AsciiUnicodeEscape};
 
         // All escape sequences start with a backslash
         assert!(self.cur == Some('\\'));
@@ -1231,12 +1074,12 @@ impl<'a> StringScanner<'a> {
         let digits_start = self.prev_pos;
         while !self.at_eof() {
             let c = self.cur.unwrap();
-            if !StringScanner::is_digit(c, 16) {
+            if !is_digit(c, 16) {
                 break;
             }
             // We don't care about overflows here as they can only be caused by
             // reading more that two non-zero digits which is already an error.
-            value = value.wrapping_shl(4) | StringScanner::hex_value(c);
+            value = value.wrapping_shl(4) | hex_value(c);
             digits += 1;
             self.read();
         }
@@ -1257,8 +1100,10 @@ impl<'a> StringScanner<'a> {
         return value as char;
     }
 
-    /// Scan over a single Unicode escape sequence. Returns Some value of the escape sequence,
-    /// or None if the sequence was legible but otherwise incorrect.
+    /// Scan over a single Unicode escape sequence.
+    ///
+    /// Returns Some value of the escape sequence, or None if the sequence was legible
+    /// but otherwise incorrect.
     fn scan_escape_unicode(&mut self, extra_delimiter: Option<char>) -> Option<char> {
         assert!(self.cur == Some('u'));
         self.read();
@@ -1311,7 +1156,7 @@ impl<'a> StringScanner<'a> {
                 // Otherwise, it may be a constituent hexadecimal digit, an invalid character,
                 // or another terminator, depending on whether we have seen an opening brace.
                 Some(c) => {
-                    let valid_digit = StringScanner::is_digit(c, 16);
+                    let valid_digit = is_digit(c, 16);
 
                     // Braced syntax of Unicode escapes allows adding support for named Unicode
                     // characters in a backwards-compatible way. However, right now we do not have
@@ -1336,7 +1181,7 @@ impl<'a> StringScanner<'a> {
                     // the value overflows the Unicode range and avoid further arithmetic overflow.
 
                     if valid_digit && !invalid_hex && !unicode_overflow {
-                        value = (value << 4) | (StringScanner::hex_value(c) as u32);
+                        value = (value << 4) | (hex_value(c) as u32);
                         if value > 0x10FFFF {
                             unicode_overflow = true;
                         }
@@ -1396,25 +1241,13 @@ impl<'a> StringScanner<'a> {
         return Some(char::from_u32(value).unwrap());
     }
 
-    /// Convert an ASCII hex digit character to its numeric value
-    fn hex_value(c: char) -> u8 {
-        assert!(StringScanner::is_digit(c, 16));
-
-        const H: &'static [u8; 128] = &[
-            0, 0, 0, 0, 0, 0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-            0, 0, 0, 0, 0, 0, 0,0,0,0,0,0,0,0,0,0,0,1,2,3,4,5,6,7,8,9,0,0,0,0,0,0,
-            0,10,11,12,13,14,15,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-            0,10,11,12,13,14,15,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        ];
-
-        return H[c as usize];
-    }
-
-    /// Scan over raw string leading sequence `r#...#"`, stopping at the first non-leading
-    /// character. Returns Some number of hashes scanned over in case of success, or None
-    /// if the string did not look like a raw string leading sequence. Scanner state is
-    /// set to the opening quote in case of success. If the character string does not look
-    /// like a raw string, scanning is stopped immediately behind the `r` character.
+    /// Scan over raw string leading sequence `r#...#"`.
+    ///
+    /// Returns Some number of hashes scanned over in case of success, or None if the string
+    /// did not look like a raw string leading sequence.
+    ///
+    /// In case of success the scanner state is set to the opening quote. If the character string
+    /// does not look like a raw string, the scanner is stopped right after the `r` character.
     fn scan_raw_string_leaders(&mut self) -> Option<u32> {
         assert!(self.cur == Some('r'));
         self.read();
@@ -1441,7 +1274,7 @@ impl<'a> StringScanner<'a> {
         return None;
     }
 
-    /// Scan over a raw string delimited by `hash_count` hashes
+    /// Scan over a raw string delimited by `hash_count` hashes.
     fn scan_raw_string(&mut self, hash_count: u32) -> Token {
         assert!(self.cur == Some('"'));
         self.read();
@@ -1475,9 +1308,15 @@ impl<'a> StringScanner<'a> {
         return Token::RawString;
     }
 
-    /// Scan over raw string trailing sequence `"#...#`, stopping either at the first non-`#`
-    /// character, or at the end of file, or when `hash_count` hashes have been scanned over,
-    /// whichever comes first. Returns `true` when a correct trailing sequence was scanned.
+    /// Scan over raw string trailing sequence `"#...#`.
+    ///
+    /// Scanner stops either at the first non-`#` character, or at the end of file, or when
+    /// `hash_count` hashes have been scanned over, whichever comes first.
+    ///
+    /// Returns `true` when a correct trailing sequence was scanned, and `false` if there
+    /// were not enough hashes after the quote and the raw string content possibly goes on.
+    /// (Possibly, because `false` is also returned when EOF is reached before the sufficient
+    /// number of hashes are scanner over.)
     fn scan_raw_string_trailers(&mut self, hash_count: u32) -> bool {
         assert!(self.cur == Some('"'));
         self.read();
@@ -1496,14 +1335,14 @@ impl<'a> StringScanner<'a> {
         return true;
     }
 
-    /// Scan over an identifier or maybe an implicit symbol
+    /// Scan over an identifier or maybe an implicit symbol.
     fn scan_identifier_or_symbol(&mut self) -> Token {
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, MARK_START, QUOTE_START};
-        use self::IdentifierSpecials::*;
+        use self::IdentifierSpecials::{Terminator, Dot, Digit, IncorrectUnicodeEscape,
+            AsciiUnicodeEscape};
 
         // Look at the first character to decide what kind of identifier we're up to
-        let old_prev_pos = self.prev_pos;
         match self.scan_one_character_of_identifier() {
             Ok(c) => {
                 let category = sash_identifiers::category_of(c);
@@ -1522,11 +1361,11 @@ impl<'a> StringScanner<'a> {
                 // Otherwise, skip over this incomprehensible character sequence until we see
                 // something meaninful. We *can* go here as scan_identifier() is called by the
                 // catch-all branch of the next() method.
-                return self.scan_unrecognized(old_prev_pos);
+                return self.scan_unrecognized();
             }
             // Ignore invalid Unicode escapes as well
             Err(IncorrectUnicodeEscape) | Err(AsciiUnicodeEscape) => {
-                return self.scan_unrecognized(old_prev_pos);
+                return self.scan_unrecognized();
             }
             // In this context, a dot must be followed by another dot, meaning a mark identifier.
             // Token::Dot should have been handled by next() before.
@@ -1539,11 +1378,12 @@ impl<'a> StringScanner<'a> {
         }
     }
 
-    /// Scan over a sequence of unrecognized characters
-    fn scan_unrecognized(&mut self, start: usize) -> Token {
+    /// Scan over a sequence of unrecognized characters.
+    fn scan_unrecognized(&mut self) -> Token {
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, MARK_START, QUOTE_START};
-        use self::IdentifierSpecials::*;
+        use self::IdentifierSpecials::{Terminator, Dot, Digit, IncorrectUnicodeEscape,
+            AsciiUnicodeEscape};
 
         // Scan over the characters until we see either a starter character for an identifier
         // or some other token. Silently skip over everything else
@@ -1565,17 +1405,18 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        self.report.error(Span::new(start, self.prev_pos),
+        self.report.error(Span::new(self.start, self.prev_pos),
             "Incomprehensible character sequence");
 
         return Token::Unrecognized;
     }
 
-    /// Scan over a word identifier
+    /// Scan over a word identifier which starts with `initial` character.
     fn scan_identifier_word(&mut self, initial: char) -> Token {
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, WORD_CONTINUE, MARK_START, QUOTE_START};
-        use self::IdentifierSpecials::*;
+        use self::IdentifierSpecials::{Terminator, Dot, Digit, IncorrectUnicodeEscape,
+            AsciiUnicodeEscape};
 
         // Word identifiers must start with a proper starter
         assert!(sash_identifiers::category_of(initial).is(WORD_START));
@@ -1630,7 +1471,8 @@ impl<'a> StringScanner<'a> {
         return Token::Identifier;
     }
 
-    /// Scan over a standalone word identifier or maybe an implicit symbol
+    /// Scan over a standalone word identifier or maybe an implicit symbol which starts
+    /// with `initial` character.
     fn scan_identifier_word_or_symbol(&mut self, initial: char) -> Token {
         let initial_token = self.scan_identifier_word(initial);
 
@@ -1643,11 +1485,12 @@ impl<'a> StringScanner<'a> {
         return initial_token;
     }
 
-    /// Scan over a mark identifier
+    /// Scan over a mark identifier which starts with `initial` character.
     fn scan_identifier_mark(&mut self, initial: char) -> Token {
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, MARK_START, MARK_CONTINUE, QUOTE_START};
-        use self::IdentifierSpecials::*;
+        use self::IdentifierSpecials::{Terminator, Dot, Digit, IncorrectUnicodeEscape,
+            AsciiUnicodeEscape};
 
         // Mark identifiers must start with a proper starter
         assert!(sash_identifiers::category_of(initial).is(MARK_START));
@@ -1708,11 +1551,12 @@ impl<'a> StringScanner<'a> {
         return Token::Identifier;
     }
 
-    /// Scan over a quote identifier
+    /// Scan over a quote identifier which starts with `initial` character.
     fn scan_identifier_quote(&mut self, initial: char) -> Token {
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, MARK_START, QUOTE_START, QUOTE_CONTINUE};
-        use self::IdentifierSpecials::*;
+        use self::IdentifierSpecials::{Terminator, Dot, Digit, IncorrectUnicodeEscape,
+            AsciiUnicodeEscape};
 
         // Quote identifiers must start with a proper starter
         assert!(sash_identifiers::category_of(initial).is(QUOTE_START));
@@ -1763,12 +1607,13 @@ impl<'a> StringScanner<'a> {
         return Token::Identifier;
     }
 
-    /// Maybe scan over an optional type suffix of literal tokens
+    /// Maybe scan over an optional type suffix of literal tokens.
     fn scan_optional_type_suffix(&mut self) {
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, MARK_START, QUOTE_START,
             WORD_CONTINUE, MARK_CONTINUE, QUOTE_CONTINUE};
-        use self::IdentifierSpecials::*;
+        use self::IdentifierSpecials::{Terminator, Dot, Digit, IncorrectUnicodeEscape,
+            AsciiUnicodeEscape};
 
         let old_prev_pos = self.prev_pos;
         match self.scan_one_character_of_identifier() {
@@ -1811,12 +1656,113 @@ impl<'a> StringScanner<'a> {
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+// Internal utility definitions
+//
+
+/// Unicode replacemente character.
+///
+/// It is currently used as a placeholder for invalid Unicode escape sequences.
+const REPLACEMENT_CHARACTER: char = '\u{FFFD}';
+
+/// Indicator values used in scanning character literals. These are returned by
+/// `StringScanner::scan_one_character_of_character()` when the next character
+/// is not a regular character of a literal.
+enum CharacterSpecials {
+    /// Literal single quote encountered. It has not been scanned over yet.
+    SingleQuote,
+
+    /// Unexpected terminator (a line ending or the end of stream) encountered.
+    /// The line ending has not been scanned over yet.
+    UnexpectedTerminator,
+}
+
+/// Indicator values used in scanning string literals. These are returned by
+/// `StringScanner::scan_one_character_of_string()` when the next character
+/// is not a regular character of a literal.
+enum StringSpecials {
+    /// Literal double quote encountered. It has not been scanned over yet.
+    DoubleQuote,
+
+    /// A backslash-escaped line ending has been skipped over, yielding no
+    /// characters for the string.
+    SkippedEscapedLineEnding,
+
+    /// Unexpected terminator (the end of stream) encountered.
+    UnexpectedTerminator,
+}
+
+/// Indicator values used in scanning explicit symbols. These are returned by
+/// `StringScanner::scan_one_character_of_symbol()` when the next character
+/// is not a regular character of a symbol.
+enum SymbolSpecials {
+    /// Literal backquote encountered. It has not been scanned over yet.
+    Backquote,
+
+    /// Unexpected terminator (a line ending or the end of stream) encountered.
+    /// The line ending has not been scanned over yet.
+    UnexpectedTerminator,
+}
+
+/// Indicator values used in scanning identifiers. These are returned by
+/// `StringScanner::scan_one_character_of_identifier()` when the next character
+/// is not a regular character of an identifier.
+enum IdentifierSpecials {
+    /// Literal dot encountered. It has not been scanned over yet.
+    Dot,
+
+    /// Literal decimal digit encountered. It has not been scanned over yet.
+    Digit,
+
+    /// Definite identifier terminator encountered (such as line ending, the
+    /// end of stream, a comment starting sequence (`//` or `/*`), or some
+    /// ASCII character that is not used in identifiers, like `[` or ':').
+    /// The terminator character has not been scanned over yet.
+    Terminator,
+
+    /// Scanned over an invalid Unicode escape which did not produce
+    /// a reliable character.
+    IncorrectUnicodeEscape,
+
+    /// Scanned over a Unicode escape representing an ASCII character.
+    AsciiUnicodeEscape,
+}
+
+/// Checks whether `c` is a valid digit of base `base`.
+fn is_digit(c: char, base: u32) -> bool {
+    match base {
+         2 => {  ('0' <= c) && (c <= '1') }
+         8 => {  ('0' <= c) && (c <= '7') }
+        10 => {  ('0' <= c) && (c <= '9') }
+        16 => { (('0' <= c) && (c <= '9')) ||
+                (('a' <= c) && (c <= 'f')) ||
+                (('A' <= c) && (c <= 'F')) }
+         _ => { panic!("invalid numeric base {}", base); }
+    }
+}
+
+/// Converts an ASCII hex digit character to its numeric value.
+fn hex_value(c: char) -> u8 {
+    assert!(is_digit(c, 16));
+
+    const H: &'static [u8; 128] = &[
+        0, 0, 0, 0, 0, 0, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0, 0, 0, 0, 0, 0, 0,0,0,0,0,0,0,0,0,0,0,1,2,3,4,5,6,7,8,9,0,0,0,0,0,0,
+        0,10,11,12,13,14,15,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,10,11,12,13,14,15,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    ];
+
+    return H[c as usize];
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // Tests
 //
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokens::{Token};
+    use diagnostics::{Span, SpanReporter};
 
     // TODO: macros to lower the amount of boilerplate and arbitrary calculations
 

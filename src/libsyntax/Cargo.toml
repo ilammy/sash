@@ -1,0 +1,11 @@
+[package]
+name = "libsyntax"
+version = "0.1.0"
+authors = ["ilammy <a.lozovsky@gmail.com>"]
+
+[lib]
+name = "syntax"
+path = "lib.rs"
+
+[dependencies]
+libunicode = { path = "../libunicode" }
