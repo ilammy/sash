@@ -4238,67 +4238,171 @@ mod tests {
         }
     }
 
-    fn check(slices: &[ScannerTestSlice], error_spans: &[Span], warning_spans: &[Span]) {
-        let whole_string = {
-            let mut t = String::new();
-            for &ScannerTestSlice(s, _) in slices {
-                t.push_str(s);
-            }
-            t
-        };
-        let end = whole_string.len();
+    /// Checks whether a sequence of test string slices yields consistent results and generates
+    /// expected diagnostics.
+    fn check(slices: &[ScannerTestSlice], expected_errors: &[Span], expected_warnings: &[Span]) {
+        let (test_string, expected_tokens) = expand_test_slices(slices);
 
-        let mut tok_iter = 1;
-        let mut byte_iter = 0;
+        let (actual_tokens, actual_errors, actual_warnings) = process_test_string(&test_string);
 
-        let sink = SinkReporter::new();
+        let token_failures =
+            verify("Tokens", &test_string, &expected_tokens, &actual_tokens, token_as_str);
 
-        let mut scanner = StringScanner::new(whole_string.as_ref(), &sink);
+        let error_failures =
+            verify("Errors", &test_string, expected_errors, &actual_errors, span_as_str);
 
+        let warning_failures =
+            verify("Warnings", &test_string, expected_warnings, &actual_warnings, span_as_str);
+
+        if let Some(first_failure) = token_failures {
+            panic!("first invalid token: #{}", first_failure);
+        }
+
+        if let Some(first_failure) = error_failures {
+            panic!("first invalid error: #{}", first_failure);
+        }
+
+        if let Some(first_failure) = warning_failures {
+            panic!("first invalid warning: #{}", first_failure);
+        }
+    }
+
+    /// Preprocesses test slices, returning the whole string to be scanned over
+    /// and the list of expected tokens with their respective spans.
+    fn expand_test_slices(slices: &[ScannerTestSlice]) -> (String, Vec<ScannedToken>) {
+        let mut all_str = String::new();
+        let mut all_tok = Vec::new();
+
+        let mut bytes = 0;
         for &ScannerTestSlice(s, ref t) in slices {
-            check_token(&scanner.next_token(), tok_iter, t,
-                        &Span::new(byte_iter, byte_iter + s.len()));
-
-            tok_iter += 1;
-            byte_iter += s.len();
+            all_str.push_str(s);
+            all_tok.push(ScannedToken {
+                tok: t.clone(),
+                span: Span::new(bytes, bytes + s.len())
+            });
+            bytes += s.len();
         }
 
-        check_token(&scanner.next_token(), tok_iter, &Token::EOF, &Span::new(end, end));
+        all_tok.push(ScannedToken { tok: Token::EOF, span: Span::new(bytes, bytes) });
 
-        check_spans("errors", error_spans, &sink.errors.borrow()[..]);
-        check_spans("warnings", warning_spans, &sink.warnings.borrow()[..]);
+        return (all_str, all_tok);
     }
 
-    fn check_token(scanned: &ScannedToken, idx: u32, kind: &Token, span: &Span) {
-        if (scanned.tok == *kind) && (scanned.span == *span) {
-            return;
+    /// Performs actual scanning of the `whole_string`, producing a list of resulting tokens
+    /// and a number of diagnostics which were emitted during scanning.
+    fn process_test_string(whole_string: &str) -> (Vec<ScannedToken>, Vec<Span>, Vec<Span>) {
+        let mut tokens = Vec::new();
+        let diagnostics = SinkReporter::new();
+
+        let mut scanner = StringScanner::new(whole_string, &diagnostics);
+
+        // Loop with postcondition to catch the EOF token
+        loop {
+            let token = scanner.next_token();
+
+            tokens.push(token.clone());
+
+            if token.tok == Token::EOF {
+                break;
+            }
         }
-        panic!("assertion failed: expected token #{} to be {:?}{} at {:?}{}",
-               idx,
-               *kind, if scanned.tok == *kind {
-                   String::new()
-               } else {
-                   format!(" (got {:?})", scanned.tok)
-               },
-               *span, if scanned.span == *span {
-                   String::new()
-               } else {
-                   format!(" (got {:?})", scanned.span)
-               }
-        );
+
+        assert!(scanner.at_eof());
+
+        let errors = diagnostics.errors.borrow().clone();
+        let warnings = diagnostics.warnings.borrow().clone();
+
+        return (tokens, errors, warnings);
     }
 
-    fn check_spans(kind: &str, expected: &[Span], actual: &[Span]) {
-        if (expected.len() == 0) && (actual.len() > 0) {
-            panic!("assertion failed: expected no {}, but got {} of them", kind, actual.len());
+    /// Prints out and verifies produced results. Returns Some 1-based index of the first incorrect
+    /// item, or None if the actual results are equal to expected ones.
+    fn verify<T, F>(title: &str, s: &str, expected: &[T], actual: &[T], as_str: F) -> Option<u32>
+        where T: Eq, F: Fn(&str, &T) -> String
+    {
+        if expected.is_empty() && actual.is_empty() {
+            return None;
         }
 
-        // TODO: better report message and functional implementation
+        print!("\n{}\n\nindex:\n\t<expected>\n\t<actual>\n", title);
 
-        assert_eq!(expected.len(), actual.len());
+        let mut first_mismatch = None;
 
-        for i in 0..expected.len() {
-            assert_eq!(expected[i], actual[i]);
+        for (index, (expected, actual)) in (1..).zip(longest_zip(expected, actual)) {
+            let bad = actual != expected;
+
+            if bad && first_mismatch.is_none() {
+                first_mismatch = Some(index);
+            }
+
+            print!("{index}:\n{ind_ex}\t{expected}\n{ind_act}\t{actual}\n",
+                index     = index,
+                ind_ex    = if bad { "-- exp:" } else { "" },
+                ind_act   = if bad { "-- act:" } else { "" },
+                expected  = expected.map_or("None".to_string(), |v| as_str(s, v)),
+                actual    = actual.  map_or("None".to_string(), |v| as_str(s, v)),
+            );
         }
+
+        return first_mismatch;
+    }
+
+    fn token_as_str(s: &str, token: &ScannedToken) -> String {
+        format!("{token:?} {slice:?} @ [{from}, {to}]",
+            token = token.tok,
+            slice = &s[token.span.from..token.span.to],
+            from  = token.span.from,
+            to    = token.span.to,
+        )
+    }
+
+    fn span_as_str(s: &str, span: &Span) -> String {
+        format!("{slice:?} @ [{from}, {to}]",
+            slice = &s[span.from..span.to],
+            from  = span.from,
+            to    = span.to,
+        )
+    }
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // Test utilities
+
+    struct LongestZip<A, B> {
+        a: A,
+        b: B,
+    }
+
+    impl<A, B> Iterator for LongestZip<A, B> where A: Iterator, B: Iterator {
+        type Item = (Option<A::Item>, Option<B::Item>);
+
+        fn next(&mut self) -> Option<Self::Item> {
+            let v_a = self.a.next();
+            let v_b = self.b.next();
+
+            if v_a.is_some() || v_b.is_some() {
+                return Some((v_a, v_b));
+            } else {
+                return None;
+            }
+        }
+    }
+
+    /// Returns an iterator which simulataneously walks over two other iterators until _both_ of
+    /// them are exhausted. It is similar to `zip()` method of `Iterator`, but it does not stop
+    /// when one of the iterators in exhausted.
+    ///
+    /// Example:
+    /// ```
+    /// assert_eq!(longest_zip(&[1, 2, 3], &[5, 6]).collect::<Vec<_>>(),
+    ///     &[
+    ///         (Some(&1), Some(&5)),
+    ///         (Some(&2), Some(&6)),
+    ///         (Some(&3), None)
+    ///     ]);
+    /// ```
+    fn longest_zip<A, B>(iter1: A, iter2: B) -> LongestZip<A::IntoIter, B::IntoIter>
+        where A: IntoIterator, B: IntoIterator
+    {
+        LongestZip { a: iter1.into_iter(), b: iter2.into_iter() }
     }
 }
