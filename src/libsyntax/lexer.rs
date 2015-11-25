@@ -19,6 +19,7 @@ use diagnostics::{Span, SpanReporter};
 //
 
 /// A scanned token with extents information.
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ScannedToken {
     /// The token itself.
     pub tok: Token,

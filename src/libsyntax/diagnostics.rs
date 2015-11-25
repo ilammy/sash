@@ -10,7 +10,7 @@
 //! error and warning messages, notifications, etc.
 
 /// Span of a token.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Span {
     /// Byte offset of the first character of the span.
     pub from: usize,
