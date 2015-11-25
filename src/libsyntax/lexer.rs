@@ -40,7 +40,7 @@ pub struct ScannedToken {
 /// for error recovery. If a token seems to be malformed the scanner will do its best to guess
 /// the intended meaning, report any encountered errors, and will carry on scanning if possible.
 /// However, a scanner will never reconsider its decisions about what it saw and where it was.
-pub trait Scanner<'a> {
+pub trait Scanner {
     /// Checks whether the end of token stream has been reached.
     /// If it is reached, the scanner will produce only `Token::EOF`.
     fn at_eof(&self) -> bool;
@@ -92,10 +92,10 @@ pub struct StringScanner<'a> {
     //
 
     /// Our designated responsible for diagnostic processing.
-    report: &'a SpanReporter<'a>,
+    report: &'a SpanReporter,
 }
 
-impl<'a> Scanner<'a> for StringScanner<'a> {
+impl<'a> Scanner for StringScanner<'a> {
     fn at_eof(&self) -> bool {
         self.cur.is_none()
     }
@@ -108,7 +108,7 @@ impl<'a> Scanner<'a> for StringScanner<'a> {
 impl<'a> StringScanner<'a> {
     /// Makes a new scanner for the given string which will report scanning errors
     /// to the given reporter.
-    pub fn new<'b>(s: &'b str, reporter: &'b SpanReporter<'b>) -> StringScanner<'b> {
+    pub fn new<'b>(s: &'b str, reporter: &'b SpanReporter) -> StringScanner<'b> {
         let mut scanner = StringScanner {
             buf: s,
             cur: None, pos: 0, prev_pos: 0,
@@ -4214,23 +4214,23 @@ mod tests {
 
     struct ScannerTestSlice<'a>(&'a str, Token);
 
-    struct SinkReporter<'a> {
-        pub errors: RefCell<Vec<(Span, &'a str)>>,
-        pub warnings: RefCell<Vec<(Span, &'a str)>>,
+    struct SinkReporter {
+        pub errors: RefCell<Vec<Span>>,
+        pub warnings: RefCell<Vec<Span>>,
     }
 
-    impl<'a> SpanReporter<'a> for SinkReporter<'a> {
-        fn error(&self, span: Span, message: &'a str) {
-            self.errors.borrow_mut().push((span, message));
+    impl SpanReporter for SinkReporter {
+        fn error(&self, span: Span, _: &str) {
+            self.errors.borrow_mut().push(span);
         }
 
-        fn warning(&self, span: Span, message: &'a str) {
-            self.warnings.borrow_mut().push((span, message));
+        fn warning(&self, span: Span, _: &str) {
+            self.warnings.borrow_mut().push(span);
         }
     }
 
-    impl<'a> SinkReporter<'a> {
-        fn new<'b>() -> SinkReporter<'b> {
+    impl SinkReporter {
+        fn new() -> SinkReporter {
             SinkReporter {
                 errors: RefCell::new(Vec::new()),
                 warnings: RefCell::new(Vec::new()),
@@ -4288,7 +4288,7 @@ mod tests {
         );
     }
 
-    fn check_spans(kind: &str, expected: &[Span], actual: &[(Span, &str)]) {
+    fn check_spans(kind: &str, expected: &[Span], actual: &[Span]) {
         if (expected.len() == 0) && (actual.len() > 0) {
             panic!("assertion failed: expected no {}, but got {} of them", kind, actual.len());
         }
@@ -4298,7 +4298,7 @@ mod tests {
         assert_eq!(expected.len(), actual.len());
 
         for i in 0..expected.len() {
-            assert_eq!(expected[i], actual[i].0);
+            assert_eq!(expected[i], actual[i]);
         }
     }
 }
