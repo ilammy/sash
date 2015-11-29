@@ -344,11 +344,11 @@ impl<'a> StringScanner<'a> {
 
         if nesting_level > 0 {
             if doc_comment {
-                self.report.error(Span::new(self.start, self.pos),
+                self.report.fatal(Span::new(self.start, self.pos),
                     "Unexpected end of file while reading a documentation comment. \
                      Please look for the missing block comment closure */");
             } else {
-                self.report.error(Span::new(self.start, self.pos),
+                self.report.fatal(Span::new(self.start, self.pos),
                     "Unexpected end of file while reading a block comment. \
                      Please look for the missing block comment closure */");
             }
@@ -571,7 +571,7 @@ impl<'a> StringScanner<'a> {
         };
 
         if !terminated {
-            self.report.error(Span::new(self.start, self.prev_pos),
+            self.report.fatal(Span::new(self.start, self.prev_pos),
                     "Missing closing single quote.");
 
             return Token::Unrecognized;
@@ -605,7 +605,7 @@ impl<'a> StringScanner<'a> {
                 // But things go wrong sometimes and the string may not be terminated
                 Err(UnexpectedTerminator) => {
                     // For strings there is only one way to get here: end of the stream
-                    self.report.error(Span::new(self.start, self.pos),
+                    self.report.fatal(Span::new(self.start, self.pos),
                         "Missing closing double quote.");
 
                     return Token::Unrecognized;
@@ -638,7 +638,7 @@ impl<'a> StringScanner<'a> {
                 }
                 // But things go wrong sometimes and the symbol may not be terminated
                 Err(UnexpectedTerminator) => {
-                    self.report.error(Span::new(self.start, self.prev_pos),
+                    self.report.fatal(Span::new(self.start, self.prev_pos),
                         "Missing closing backquote.");
 
                     return Token::Unrecognized;
@@ -1292,7 +1292,7 @@ impl<'a> StringScanner<'a> {
                     self.read();
                 }
                 None => {
-                    self.report.error(Span::new(self.start, self.pos),
+                    self.report.fatal(Span::new(self.start, self.pos),
                         "Unexpected EOF. Expected end of raw string");
                     // TODO: output expected number of hashes
 
@@ -1863,21 +1863,21 @@ mod tests {
     fn block_comment_unterminated_1() {
         check(&[
             ScannerTestSlice("/* forgot", Token::Unrecognized),
-        ], &[Span::new(0, 9)], &[]);
+        ], &[], &[Span::new(0, 9)]);
     }
 
     #[test]
     fn block_comment_unterminated_2() {
         check(&[
             ScannerTestSlice("/*/", Token::Unrecognized),
-        ], &[Span::new(0, 3)], &[]);
+        ], &[], &[Span::new(0, 3)]);
     }
 
     #[test]
     fn block_comment_unterminated_nested() {
         check(&[
             ScannerTestSlice("/*/*nested*/", Token::Unrecognized),
-        ], &[Span::new(0, 12)], &[]);
+        ], &[], &[Span::new(0, 12)]);
     }
 
     #[test]
@@ -1936,10 +1936,10 @@ mod tests {
 
     #[test]
     fn doc_comment_block_unterminated() {
-        check(&[ScannerTestSlice("/** forgot ", Token::Unrecognized)], &[Span::new(0, 11)], &[]);
-        check(&[ScannerTestSlice("/*! as well", Token::Unrecognized)], &[Span::new(0, 11)], &[]);
-        check(&[ScannerTestSlice("/** /*nest",  Token::Unrecognized)], &[Span::new(0, 10)], &[]);
-        check(&[ScannerTestSlice("/*!/*!*/",    Token::Unrecognized)], &[Span::new(0,  8)], &[]);
+        check(&[ScannerTestSlice("/** forgot ", Token::Unrecognized)], &[], &[Span::new(0, 11)]);
+        check(&[ScannerTestSlice("/*! as well", Token::Unrecognized)], &[], &[Span::new(0, 11)]);
+        check(&[ScannerTestSlice("/** /*nest",  Token::Unrecognized)], &[], &[Span::new(0, 10)]);
+        check(&[ScannerTestSlice("/*!/*!*/",    Token::Unrecognized)], &[], &[Span::new(0,  8)]);
     }
 
     #[test]
@@ -2194,9 +2194,10 @@ mod tests {
             ScannerTestSlice("542_",                    Token::Integer),
             ScannerTestSlice("\\",                      Token::Unrecognized),
             ScannerTestSlice("x10",                     Token::Identifier),
-        ], &[ Span::new( 3, 11), Span::new(18, 19), Span::new(28, 31), Span::new(33, 36),
-              Span::new(40, 46), Span::new(54, 55), Span::new(63, 65), Span::new(71, 72),
-              Span::new(78, 86), Span::new(78, 92), Span::new(97, 98)
+        ], &[
+            Span::new( 3, 11), Span::new(18, 19), Span::new(28, 31), Span::new(33, 36),
+            Span::new(40, 46), Span::new(54, 55), Span::new(63, 65), Span::new(71, 72),
+            Span::new(78, 86), Span::new(78, 92), Span::new(97, 98)
         ], &[]);
     }
 
@@ -2378,9 +2379,10 @@ mod tests {
             ScannerTestSlice("5.0_",                    Token::Float),
             ScannerTestSlice("\\",                      Token::Unrecognized),
             ScannerTestSlice("e10",                     Token::Identifier),
-        ], &[ Span::new(  4,  12), Span::new( 19,  20), Span::new( 34,  34), Span::new( 36,  36),
-              Span::new( 44,  50), Span::new( 61,  62), Span::new( 62,  63), Span::new( 70,  72),
-              Span::new( 81,  82), Span::new( 89,  97), Span::new( 89, 103), Span::new(108, 109)
+        ], &[
+            Span::new(  4,  12), Span::new( 19,  20), Span::new( 34,  34), Span::new( 36,  36),
+            Span::new( 44,  50), Span::new( 61,  62), Span::new( 62,  63), Span::new( 70,  72),
+            Span::new( 81,  82), Span::new( 89,  97), Span::new( 89, 103), Span::new(108, 109)
         ], &[]);
     }
 
@@ -2545,26 +2547,29 @@ mod tests {
             ScannerTestSlice(".",                Token::Dot),
             ScannerTestSlice("'test\rline'",     Token::Character),
             ScannerTestSlice("'another\rtest",   Token::Unrecognized),
-        ], &[ Span::new( 0, 16), Span::new(20, 27), Span::new(29, 31), Span::new(39, 40),
-              Span::new(34, 45), Span::new(53, 54), Span::new(45, 58) ], &[]);
+        ], &[
+            Span::new(29, 31), Span::new(39, 40), Span::new(34, 45), Span::new(53, 54),
+        ], &[
+            Span::new( 0, 16), Span::new(20, 27), Span::new(45, 58),
+        ]);
     }
 
     #[test]
     fn character_premature_termination() {
-        check(&[ ScannerTestSlice("'",      Token::Unrecognized) ], &[ Span::new(0, 1) ], &[]);
-        check(&[ ScannerTestSlice("'a",     Token::Unrecognized) ], &[ Span::new(0, 2) ], &[]);
-        check(&[ ScannerTestSlice("'\\",    Token::Unrecognized) ], &[ Span::new(0, 2) ], &[]);
-        check(&[ ScannerTestSlice("'\t",    Token::Unrecognized) ], &[ Span::new(0, 2) ], &[]);
-        check(&[ ScannerTestSlice("'\\x",   Token::Unrecognized) ], &[ Span::new(3, 3),
-                                                                       Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("'\\y",   Token::Unrecognized) ], &[ Span::new(1, 3),
-                                                                       Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("'\\u",   Token::Unrecognized) ], &[ Span::new(3, 3),
-                                                                       Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("'\\u{",  Token::Unrecognized) ], &[ Span::new(3, 4),
-                                                                       Span::new(0, 4) ], &[]);
-        check(&[ ScannerTestSlice("'\\u{}", Token::Unrecognized) ], &[ Span::new(3, 5),
-                                                                       Span::new(0, 5) ], &[]);
+        check(&[ ScannerTestSlice("'",      Token::Unrecognized) ], &[], &[ Span::new(0, 1) ]);
+        check(&[ ScannerTestSlice("'a",     Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
+        check(&[ ScannerTestSlice("'\\",    Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
+        check(&[ ScannerTestSlice("'\t",    Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
+        check(&[ ScannerTestSlice("'\\x",   Token::Unrecognized) ], &[ Span::new(3, 3) ],
+                                                                    &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("'\\y",   Token::Unrecognized) ], &[ Span::new(1, 3) ],
+                                                                    &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("'\\u",   Token::Unrecognized) ], &[ Span::new(3, 3) ],
+                                                                    &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("'\\u{",  Token::Unrecognized) ], &[ Span::new(3, 4) ],
+                                                                    &[ Span::new(0, 4) ]);
+        check(&[ ScannerTestSlice("'\\u{}", Token::Unrecognized) ], &[ Span::new(3, 5) ],
+                                                                    &[ Span::new(0, 5) ]);
     }
 
     #[test]
@@ -2583,8 +2588,11 @@ mod tests {
             ScannerTestSlice("'",            Token::Unrecognized),
             ScannerTestSlice("\r\n",         Token::Whitespace),
             ScannerTestSlice("'",            Token::Unrecognized),
-        ], &[ Span::new( 1,  2), Span::new( 9, 10), Span::new( 4, 15), Span::new(16, 17),
-              Span::new(22, 23), Span::new(25, 26) ], &[]);
+        ], &[
+            Span::new( 1,  2), Span::new( 9, 10), Span::new( 4, 15),
+        ], &[
+            Span::new(16, 17), Span::new(22, 23), Span::new(25, 26)
+        ]);
     }
 
     #[test]
@@ -2625,10 +2633,13 @@ mod tests {
             ScannerTestSlice(r"'\u{123, missing",       Token::Unrecognized),
             ScannerTestSlice("\n",                      Token::Whitespace),
             ScannerTestSlice(r"'\u{more missing",       Token::Unrecognized),
-        ], &[ Span::new(  7,   7), Span::new(12,  13), Span::new(18, 24), Span::new( 34,  34),
-              Span::new( 29,  34), Span::new(39,  57), Span::new(79, 79), Span::new( 62,  79),
-              Span::new( 97,  97), Span::new(84,  97), Span::new(81, 97), Span::new(114, 114),
-              Span::new(101, 114), Span::new(98, 114) ], &[]);
+        ], &[
+            Span::new(  7,   7), Span::new( 12,  13), Span::new( 18,  24), Span::new( 34,  34),
+            Span::new( 29,  34), Span::new( 39,  57), Span::new( 79,  79), Span::new( 62,  79),
+            Span::new( 97,  97), Span::new( 84,  97), Span::new(114, 114), Span::new(101, 114),
+        ], &[
+            Span::new( 81,  97), Span::new( 98, 114),
+        ]);
     }
 
     #[test]
@@ -2704,11 +2715,13 @@ mod tests {
             ScannerTestSlice("'b\\\t\\",    Token::Unrecognized),
             ScannerTestSlice("\n\t",          Token::Whitespace),
             ScannerTestSlice("'",           Token::Unrecognized),
-        ], &[ Span::new( 1,  3), Span::new( 6,  8), Span::new(11, 13), Span::new(16, 18),
-              Span::new(21, 23), Span::new(26, 28), Span::new(25, 30), Span::new(32, 34),
-              Span::new(37, 40), Span::new(43, 45), Span::new(42, 47), Span::new(48, 50),
-              Span::new(56, 61), Span::new(70, 72), Span::new(68, 73), Span::new(75, 76),
-        ], &[]);
+        ], &[
+            Span::new( 1,  3), Span::new( 6,  8), Span::new(11, 13), Span::new(16, 18),
+            Span::new(21, 23), Span::new(26, 28), Span::new(25, 30), Span::new(32, 34),
+            Span::new(37, 40), Span::new(43, 45), Span::new(42, 47), Span::new(70, 72),
+        ], &[
+            Span::new(48, 50), Span::new(56, 61), Span::new(68, 73), Span::new(75, 76),
+        ]);
     }
 
     #[test]
@@ -2757,8 +2770,9 @@ mod tests {
             ScannerTestSlice("'f'",                     Token::Character),
             ScannerTestSlice("\\",                      Token::Unrecognized),
             ScannerTestSlice("x",                       Token::Identifier),
-        ], &[ Span::new(17, 25), Span::new(39, 41), Span::new(37, 41), Span::new(48, 49),
-              Span::new(51, 52), Span::new(46, 52), Span::new(63, 71), Span::new(75, 76),
+        ], &[
+            Span::new(17, 25), Span::new(39, 41), Span::new(37, 41), Span::new(48, 49),
+            Span::new(51, 52), Span::new(46, 52), Span::new(63, 71), Span::new(75, 76),
         ], &[]);
     }
 
@@ -2787,10 +2801,13 @@ mod tests {
             ScannerTestSlice("'bar",                    Token::Unrecognized),
             ScannerTestSlice("\r\n",                    Token::Whitespace),
             ScannerTestSlice("'baz",                    Token::Unrecognized),
-        ], &[ Span::new(  1,  9), Span::new( 14, 16), Span::new( 18, 20), Span::new( 24, 25),
-              Span::new( 29, 30), Span::new( 27, 30), Span::new( 32, 34), Span::new( 38, 39),
-              Span::new( 44, 50), Span::new( 57, 61), Span::new( 66, 70), Span::new( 72, 76),
-        ], &[]);
+        ], &[
+            Span::new(  1,  9), Span::new( 14, 16), Span::new( 18, 20), Span::new( 24, 25),
+            Span::new( 29, 30), Span::new( 27, 30), Span::new( 32, 34), Span::new( 38, 39),
+            Span::new( 44, 50),
+        ], &[
+            Span::new( 57, 61), Span::new( 66, 70), Span::new( 72, 76),
+        ]);
     }
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -2875,20 +2892,20 @@ mod tests {
 
     #[test]
     fn string_premature_termination() {
-        check(&[ ScannerTestSlice("\"",      Token::Unrecognized) ], &[ Span::new(0, 1) ], &[]);
-        check(&[ ScannerTestSlice("\"a",     Token::Unrecognized) ], &[ Span::new(0, 2) ], &[]);
-        check(&[ ScannerTestSlice("\"\\",    Token::Unrecognized) ], &[ Span::new(0, 2) ], &[]);
-        check(&[ ScannerTestSlice("\"\t",    Token::Unrecognized) ], &[ Span::new(0, 2) ], &[]);
-        check(&[ ScannerTestSlice("\"\\x",   Token::Unrecognized) ], &[ Span::new(3, 3),
-                                                                        Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("\"\\y",   Token::Unrecognized) ], &[ Span::new(1, 3),
-                                                                        Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("\"\\u",   Token::Unrecognized) ], &[ Span::new(3, 3),
-                                                                        Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("\"\\u{",  Token::Unrecognized) ], &[ Span::new(3, 4),
-                                                                        Span::new(0, 4) ], &[]);
-        check(&[ ScannerTestSlice("\"\\u{}", Token::Unrecognized) ], &[ Span::new(3, 5),
-                                                                        Span::new(0, 5) ], &[]);
+        check(&[ ScannerTestSlice("\"",      Token::Unrecognized) ], &[], &[ Span::new(0, 1) ]);
+        check(&[ ScannerTestSlice("\"a",     Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
+        check(&[ ScannerTestSlice("\"\\",    Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
+        check(&[ ScannerTestSlice("\"\t",    Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
+        check(&[ ScannerTestSlice("\"\\x",   Token::Unrecognized) ], &[ Span::new(3, 3) ],
+                                                                     &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("\"\\y",   Token::Unrecognized) ], &[ Span::new(1, 3) ],
+                                                                     &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("\"\\u",   Token::Unrecognized) ], &[ Span::new(3, 3) ],
+                                                                     &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("\"\\u{",  Token::Unrecognized) ], &[ Span::new(3, 4) ],
+                                                                     &[ Span::new(0, 4) ]);
+        check(&[ ScannerTestSlice("\"\\u{}", Token::Unrecognized) ], &[ Span::new(3, 5) ],
+                                                                     &[ Span::new(0, 5) ]);
     }
 
     #[test]
@@ -2932,13 +2949,16 @@ mod tests {
             ScannerTestSlice("\"\\u{or this\\f\"",                          Token::String),
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
             ScannerTestSlice(r#""\u{check missing"#,                        Token::Unrecognized),
-        ], &[ Span::new(  7,   7), Span::new( 12,  13), Span::new( 18,  24), Span::new( 34,  34),
-              Span::new( 29,  34), Span::new( 39,  57), Span::new( 79,  79), Span::new( 62,  79),
-              Span::new( 97,  97), Span::new( 84,  97), Span::new(137, 137), Span::new(124, 137),
-              Span::new(158, 184), Span::new(199, 199), Span::new(189, 199), Span::new(222, 222),
-              Span::new(212, 222), Span::new(242, 242), Span::new(234, 242), Span::new(242, 244),
-              Span::new(263, 263), Span::new(249, 263), Span::new(246, 263),
-        ], &[]);
+        ], &[
+            Span::new(  7,   7), Span::new( 12,  13), Span::new( 18,  24), Span::new( 34,  34),
+            Span::new( 29,  34), Span::new( 39,  57), Span::new( 79,  79), Span::new( 62,  79),
+            Span::new( 97,  97), Span::new( 84,  97), Span::new(137, 137), Span::new(124, 137),
+            Span::new(158, 184), Span::new(199, 199), Span::new(189, 199), Span::new(222, 222),
+            Span::new(212, 222), Span::new(242, 242), Span::new(234, 242), Span::new(242, 244),
+            Span::new(263, 263), Span::new(249, 263),
+        ], &[
+            Span::new(246, 263),
+        ]);
     }
 
     #[test]
@@ -3024,8 +3044,9 @@ mod tests {
             ScannerTestSlice("\"foo\"",                 Token::String),
             ScannerTestSlice("\\",                      Token::Unrecognized),
             ScannerTestSlice("U900",                    Token::Identifier),
-        ], &[ Span::new(13, 21), Span::new(26, 28), Span::new(24, 28), Span::new(36, 38),
-              Span::new(34, 38), Span::new(48, 56), Span::new(57, 65), Span::new(71, 72),
+        ], &[
+            Span::new(13, 21), Span::new(26, 28), Span::new(24, 28), Span::new(36, 38),
+            Span::new(34, 38), Span::new(48, 56), Span::new(57, 65), Span::new(71, 72),
         ], &[]);
     }
 
@@ -3137,22 +3158,30 @@ mod tests {
 
     #[test]
     fn raw_string_premature_termination() {
-        check(&[ScannerTestSlice("r\"",               Token::Unrecognized)],
-              &[ Span::new(0, 2) ], &[]);
-        check(&[ScannerTestSlice("r\"some text",      Token::Unrecognized)],
-              &[ Span::new(0, 11) ], &[]);
-        check(&[ScannerTestSlice("r\"line\n",         Token::Unrecognized)],
-              &[ Span::new(0, 7) ], &[]);
-        check(&[ScannerTestSlice("r\"windows\r\n",    Token::Unrecognized)],
-              &[ Span::new(0, 11) ], &[]);
-        check(&[ScannerTestSlice("r\"bare CR\r",      Token::Unrecognized)],
-              &[ Span::new(9, 10), Span::new(0, 10) ], &[]);
-        check(&[ScannerTestSlice("r#\"text\"",        Token::Unrecognized)],
-              &[ Span::new(0, 8) ], &[]);
-        check(&[ScannerTestSlice("r###\"te\"#xt\"##", Token::Unrecognized)],
-              &[ Span::new(0, 14) ], &[]);
-        check(&[ScannerTestSlice("r#\"r\"\"",         Token::Unrecognized)],
-              &[ Span::new(0, 6) ], &[]);
+        check(&[
+            ScannerTestSlice("r\"",               Token::Unrecognized)
+        ], &[], &[ Span::new(0, 2) ]);
+        check(&[
+            ScannerTestSlice("r\"some text",      Token::Unrecognized)
+        ], &[], &[ Span::new(0, 11) ]);
+        check(&[
+            ScannerTestSlice("r\"line\n",         Token::Unrecognized)
+        ], &[], &[ Span::new(0, 7) ]);
+        check(&[
+            ScannerTestSlice("r\"windows\r\n",    Token::Unrecognized)
+        ], &[], &[ Span::new(0, 11) ]);
+        check(&[
+            ScannerTestSlice("r\"bare CR\r",      Token::Unrecognized)
+        ], &[ Span::new(9, 10) ], &[ Span::new(0, 10) ]);
+        check(&[
+            ScannerTestSlice("r#\"text\"",        Token::Unrecognized)
+        ], &[], &[ Span::new(0, 8) ]);
+        check(&[
+            ScannerTestSlice("r###\"te\"#xt\"##", Token::Unrecognized)
+        ], &[], &[ Span::new(0, 14) ]);
+        check(&[
+            ScannerTestSlice("r#\"r\"\"",         Token::Unrecognized)
+        ], &[], &[ Span::new(0, 6) ]);
     }
 
     #[test]
@@ -3243,8 +3272,9 @@ mod tests {
             ScannerTestSlice("#",                           Token::Hash),
             ScannerTestSlice("\"4\"",                       Token::String),
             ScannerTestSlice("#",                           Token::Hash),
-        ], &[ Span::new(14, 22), Span::new(31, 33), Span::new(29, 33), Span::new(41, 43),
-              Span::new(39, 43), Span::new(67, 75), Span::new(82, 83), Span::new(93, 99),
+        ], &[
+            Span::new(14, 22), Span::new(31, 33), Span::new(29, 33), Span::new(41, 43),
+            Span::new(39, 43), Span::new(67, 75), Span::new(82, 83), Span::new(93, 99),
         ], &[]);
     }
 
@@ -3742,14 +3772,15 @@ mod tests {
             ScannerTestSlice("\n",                                          Token::Whitespace),
             // And unexpected EOFs can happen with identifiers too, thought they are not fatal
             ScannerTestSlice(r"\u{914",                                     Token::Identifier),
-        ], &[ Span::new(  2,   6), Span::new(  8,  12), Span::new( 14,  18), Span::new( 20,  24),
-              Span::new( 27,  31), Span::new( 36,  40), Span::new( 51,  51), Span::new( 58,  58),
-              Span::new( 65,  65), Span::new( 73,  77), Span::new( 87,  91), Span::new( 99,  99),
-              Span::new(101, 101), Span::new(108, 112), Span::new(119, 119), Span::new(121, 125),
-              Span::new(128, 128), Span::new(126, 128), Span::new(132, 132), Span::new(130, 132),
-              Span::new(136, 138), Span::new(134, 138), Span::new(143, 143), Span::new(141, 143),
-              Span::new(148, 148), Span::new(146, 148), Span::new(152, 152), Span::new(150, 152),
-              Span::new(158, 158), Span::new(156, 158), Span::new(189, 189), Span::new(196, 196),
+        ], &[
+            Span::new(  2,   6), Span::new(  8,  12), Span::new( 14,  18), Span::new( 20,  24),
+            Span::new( 27,  31), Span::new( 36,  40), Span::new( 51,  51), Span::new( 58,  58),
+            Span::new( 65,  65), Span::new( 73,  77), Span::new( 87,  91), Span::new( 99,  99),
+            Span::new(101, 101), Span::new(108, 112), Span::new(119, 119), Span::new(121, 125),
+            Span::new(128, 128), Span::new(126, 128), Span::new(132, 132), Span::new(130, 132),
+            Span::new(136, 138), Span::new(134, 138), Span::new(143, 143), Span::new(141, 143),
+            Span::new(148, 148), Span::new(146, 148), Span::new(152, 152), Span::new(150, 152),
+            Span::new(158, 158), Span::new(156, 158), Span::new(189, 189), Span::new(196, 196),
         ], &[]);
     }
 
@@ -3784,12 +3815,13 @@ mod tests {
             ScannerTestSlice(r" ",                                          Token::Whitespace),
             ScannerTestSlice(r"\u{Some}\u{Invalid}\u{Stuff}",               Token::Unrecognized),
             ScannerTestSlice(r"_123",                                       Token::Identifier),
-        ], &[ Span::new(  4,   6), Span::new( 11,  19), Span::new( 21,  35), Span::new( 41,  65),
-              Span::new( 68,  76), Span::new( 76,  84), Span::new( 68,  84), Span::new( 86,  94),
-              Span::new( 95, 103), Span::new(103, 111), Span::new(120, 137), Span::new(120, 137),
-              Span::new(141, 152), Span::new(161, 167), Span::new(169, 178), Span::new(180, 187),
-              Span::new(159, 187), Span::new(193, 199), Span::new(201, 210), Span::new(212, 219),
-              Span::new(191, 219),
+        ], &[
+            Span::new(  4,   6), Span::new( 11,  19), Span::new( 21,  35), Span::new( 41,  65),
+            Span::new( 68,  76), Span::new( 76,  84), Span::new( 68,  84), Span::new( 86,  94),
+            Span::new( 95, 103), Span::new(103, 111), Span::new(120, 137), Span::new(120, 137),
+            Span::new(141, 152), Span::new(161, 167), Span::new(169, 178), Span::new(180, 187),
+            Span::new(159, 187), Span::new(193, 199), Span::new(201, 210), Span::new(212, 219),
+            Span::new(191, 219),
          ], &[]);
     }
 
@@ -3840,12 +3872,13 @@ mod tests {
             ScannerTestSlice("C\u{20DD}_\u{20E3}",                          Token::Identifier),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("+\u{200D}+=\u{200D}",                         Token::Identifier),
-        ], &[ Span::new(  0,   7), Span::new(  8,  12), Span::new( 13,  21), Span::new( 22,  28),
-              Span::new( 29,  43), Span::new( 44,  61), Span::new( 62,  63), Span::new( 67,  69),
-              Span::new( 74,  75), Span::new( 76,  89), Span::new( 90,  97), Span::new(104, 105),
-              Span::new(107, 110), Span::new(111, 112), Span::new(116, 117), Span::new(118, 119),
-              Span::new(126, 127), Span::new(132, 134), Span::new(138, 140), Span::new(143, 146),
-              Span::new(147, 150), Span::new(152, 155), Span::new(157, 160),
+        ], &[
+            Span::new(  0,   7), Span::new(  8,  12), Span::new( 13,  21), Span::new( 22,  28),
+            Span::new( 29,  43), Span::new( 44,  61), Span::new( 62,  63), Span::new( 67,  69),
+            Span::new( 74,  75), Span::new( 76,  89), Span::new( 90,  97), Span::new(104, 105),
+            Span::new(107, 110), Span::new(111, 112), Span::new(116, 117), Span::new(118, 119),
+            Span::new(126, 127), Span::new(132, 134), Span::new(138, 140), Span::new(143, 146),
+            Span::new(147, 150), Span::new(152, 155), Span::new(157, 160),
         ], &[]);
     }
 
@@ -3897,8 +3930,9 @@ mod tests {
             ScannerTestSlice(r"test\u{0020}test",                           Token::Identifier),
             ScannerTestSlice(r" ",                                          Token::Whitespace),
             ScannerTestSlice(r"a\u{2B}b",                                   Token::Identifier),
-        ], &[ Span::new( 1,  7), Span::new(16, 22), Span::new(26, 44), Span::new(45, 51),
-              Span::new(52, 58), Span::new(60, 66), Span::new(72, 80), Span::new(86, 92),
+        ], &[
+            Span::new( 1,  7), Span::new(16, 22), Span::new(26, 44), Span::new(45, 51),
+            Span::new(52, 58), Span::new(60, 66), Span::new(72, 80), Span::new(86, 92),
         ], &[]);
     }
 
@@ -4151,22 +4185,25 @@ mod tests {
             ScannerTestSlice("\n\t",                                        Token::Whitespace),
             ScannerTestSlice("test",                                        Token::Identifier),
             ScannerTestSlice("`",                                           Token::Unrecognized),
-        ], &[ Span::new( 0,  8), Span::new( 9, 19), Span::new(25, 26), Span::new(32, 33),
-              Span::new(34, 35), Span::new(38, 39), Span::new(41, 43), Span::new(49, 50),
-        ], &[]);
+        ], &[
+            Span::new(25, 26), Span::new(38, 39),
+        ], &[
+            Span::new( 0,  8), Span::new( 9, 19), Span::new(32, 33), Span::new(34, 35),
+            Span::new(41, 43), Span::new(49, 50),
+        ]);
     }
 
     #[test]
     fn symbol_explicit_premature_termination() {
         // Unexpected EOFs are handled similar to characters and strings
-        check(&[ ScannerTestSlice("`",      Token::Unrecognized) ], &[ Span::new(0, 1) ], &[]);
-        check(&[ ScannerTestSlice("`xyz",   Token::Unrecognized) ], &[ Span::new(0, 4) ], &[]);
-        check(&[ ScannerTestSlice("`\\x",   Token::Unrecognized) ], &[ Span::new(3, 3),
-                                                                       Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("`\\u",   Token::Unrecognized) ], &[ Span::new(3, 3),
-                                                                       Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("`\\u{1", Token::Unrecognized) ], &[ Span::new(5, 5),
-                                                                       Span::new(0, 5) ], &[]);
+        check(&[ ScannerTestSlice("`",      Token::Unrecognized) ], &[], &[ Span::new(0, 1) ]);
+        check(&[ ScannerTestSlice("`xyz",   Token::Unrecognized) ], &[], &[ Span::new(0, 4) ]);
+        check(&[ ScannerTestSlice("`\\x",   Token::Unrecognized) ], &[ Span::new(3, 3) ],
+                                                                    &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("`\\u",   Token::Unrecognized) ], &[ Span::new(3, 3) ],
+                                                                    &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("`\\u{1", Token::Unrecognized) ], &[ Span::new(5, 5) ],
+                                                                    &[ Span::new(0, 5) ]);
     }
 
     #[test]
