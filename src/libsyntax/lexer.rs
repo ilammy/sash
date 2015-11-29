@@ -1760,7 +1760,8 @@ fn hex_value(c: char) -> u8 {
 mod tests {
     use super::*;
     use tokens::{Token};
-    use diagnostics::{Span, SpanReporter};
+    use diagnostics;
+    use diagnostics::{Span, SpanReporter, Severity};
 
     #[test]
     fn empty_string() {
@@ -4202,59 +4203,57 @@ mod tests {
     // Test helpers
 
     use std::cell::RefCell;
+    use std::rc::Rc;
 
     struct ScannerTestSlice<'a>(&'a str, Token);
 
     struct SinkReporter {
-        pub errors: RefCell<Vec<Span>>,
-        pub warnings: RefCell<Vec<Span>>,
+        pub diagnostics: Rc<RefCell<Vec<(Severity, Span)>>>,
     }
 
-    impl SpanReporter for SinkReporter {
-        fn error(&self, span: Span, _: &str) {
-            self.errors.borrow_mut().push(span);
-        }
+    impl diagnostics::Reporter for SinkReporter {
+        fn report(&mut self, severity: Severity, _: &str, loc: Option<Span>) {
+            let mut diagnostics = self.diagnostics.borrow_mut();
 
-        fn warning(&self, span: Span, _: &str) {
-            self.warnings.borrow_mut().push(span);
+            // Scanner diagnostics always come with a location.
+            diagnostics.push((severity, loc.unwrap()));
         }
     }
 
     impl SinkReporter {
-        fn new() -> SinkReporter {
+        fn new(diagnostics: Rc<RefCell<Vec<(Severity, Span)>>>) -> SinkReporter {
             SinkReporter {
-                errors: RefCell::new(Vec::new()),
-                warnings: RefCell::new(Vec::new()),
+                diagnostics: diagnostics,
             }
         }
     }
 
     /// Checks whether a sequence of test string slices yields consistent results and generates
     /// expected diagnostics.
-    fn check(slices: &[ScannerTestSlice], expected_errors: &[Span], expected_warnings: &[Span]) {
+    fn check(slices: &[ScannerTestSlice], expected_errors: &[Span], expected_fatals: &[Span]) {
         let (test_string, expected_tokens) = expand_test_slices(slices);
 
-        let (actual_tokens, actual_errors, actual_warnings) = process_test_string(&test_string);
+        let (actual_tokens, actual_fatals, actual_errors) = process_test_string(&test_string);
 
         let token_failures =
             verify("Tokens", &test_string, &expected_tokens, &actual_tokens, token_as_str);
 
+        let fatal_failures =
+            verify("Fatal errors", &test_string, expected_fatals, &actual_fatals, span_as_str);
+
         let error_failures =
             verify("Errors", &test_string, expected_errors, &actual_errors, span_as_str);
-
-        let warning_failures =
-            verify("Warnings", &test_string, expected_warnings, &actual_warnings, span_as_str);
 
         if let Some(first_failure) = token_failures {
             panic!("first invalid token: #{}", first_failure);
         }
 
-        if let Some(first_failure) = error_failures {
-            panic!("first invalid error: #{}", first_failure);
+        if let Some(first_failure) = fatal_failures {
+            panic!("first invalid fatal: #{}", first_failure);
         }
 
-        if let Some(first_failure) = warning_failures {
-            panic!("first invalid warning: #{}", first_failure);
+        if let Some(first_failure) = error_failures {
+            panic!("first invalid error: #{}", first_failure);
         }
     }
 
@@ -4283,9 +4282,11 @@ mod tests {
     /// and a number of diagnostics which were emitted during scanning.
     fn process_test_string(whole_string: &str) -> (Vec<ScannedToken>, Vec<Span>, Vec<Span>) {
         let mut tokens = Vec::new();
-        let diagnostics = SinkReporter::new();
+        let diagnostics = Rc::new(RefCell::new(Vec::new()));
+        let reporter = SinkReporter::new(diagnostics.clone());
+        let handler = SpanReporter::with_reporter(Box::new(reporter));
 
-        let mut scanner = StringScanner::new(whole_string, &diagnostics);
+        let mut scanner = StringScanner::new(whole_string, &handler);
 
         // Loop with postcondition to catch the EOF token
         loop {
@@ -4300,10 +4301,24 @@ mod tests {
 
         assert!(scanner.at_eof());
 
-        let errors = diagnostics.errors.borrow().clone();
-        let warnings = diagnostics.warnings.borrow().clone();
+        let (fatals, errors) = partition_diagnostics(&diagnostics.borrow()[..]);
 
-        return (tokens, errors, warnings);
+        return (tokens, fatals, errors);
+    }
+
+    /// Partitions diagnostics by severity.
+    fn partition_diagnostics(diags: &[(Severity, Span)]) -> (Vec<Span>, Vec<Span>) {
+        let mut fatals = Vec::new();
+        let mut errors = Vec::new();
+
+        for &(severity, span) in diags {
+            match severity {
+                Severity::Fatal => fatals.push(span),
+                Severity::Error => errors.push(span),
+            }
+        }
+
+        return (fatals, errors);
     }
 
     /// Prints out and verifies produced results. Returns Some 1-based index of the first incorrect
