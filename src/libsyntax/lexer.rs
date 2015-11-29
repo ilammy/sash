@@ -288,15 +288,8 @@ impl<'a> StringScanner<'a> {
                 // Report bare CR characters as they may have meant to be line endings,
                 // but are not treated as such in Sash.
                 '\r' => {
-                    if doc_comment {
-                        self.report.error(Span::new(self.prev_pos, self.pos),
-                            "Bare CR characters are not allowed in documentation \
-                             comments");
-                    } else {
-                        self.report.warning(Span::new(self.prev_pos, self.pos),
-                            "Bare CR character encountered in a line comment. \
-                             Did you mean Windows line ending, CRLF?");
-                    }
+                    self.report.error(Span::new(self.prev_pos, self.pos),
+                        "Bare CR character encountered in a line comment.");
                     self.read();
                 }
                 // Skip over anything else, we're scanning a comment
@@ -1804,7 +1797,7 @@ mod tests {
     fn line_comment_cr() {
         check(&[
             ScannerTestSlice("// example line comment\r       \t", Token::Comment),
-        ], &[], &[Span::new(23, 24)]);
+        ], &[Span::new(23, 24)], &[]);
     }
 
     #[test]
@@ -1829,7 +1822,7 @@ mod tests {
     fn line_comment_consecutive_cr() {
         check(&[
             ScannerTestSlice("// line 1\r// line 2\r     ", Token::Comment),
-        ], &[], &[Span::new(9, 10), Span::new(19, 20)]);
+        ], &[Span::new(9, 10), Span::new(19, 20)], &[]);
     }
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
