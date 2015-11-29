@@ -1769,8 +1769,6 @@ mod tests {
     use tokens::{Token};
     use diagnostics::{Span, SpanReporter};
 
-    // TODO: macros to lower the amount of boilerplate and arbitrary calculations
-
     #[test]
     fn empty_string() {
         check(&[], &[], &[]);
