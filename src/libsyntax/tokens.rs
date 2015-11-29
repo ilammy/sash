@@ -9,7 +9,7 @@
 //! This module contains definitions of various tokens recognized and processed by Sash parser.
 
 /// Types of tokens recognized by the scanner.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Token {
     /// Marker token denoting the end-of-token-stream condition.
     EOF,

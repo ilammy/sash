@@ -10,7 +10,7 @@
 //! error and warning messages, notifications, etc.
 
 /// Span of a token.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Span {
     /// Byte offset of the first character of the span.
     pub from: usize,
@@ -32,10 +32,10 @@ impl Span {
 /// Reporters are used to... report various errors, warnings, suggestions, threats, etc.
 /// which are encountered while processing the source code. SpanReporter reports such things
 /// in relation to some span of the source.
-pub trait SpanReporter<'a> {
+pub trait SpanReporter {
     /// Reports an error at given span with the given message.
-    fn error(&self, span: Span, message: &'a str);
+    fn error(&self, span: Span, message: &str);
 
     /// Reports an warning at given span with the given message.
-    fn warning(&self, span: Span, message: &'a str);
+    fn warning(&self, span: Span, message: &str);
 }

@@ -19,6 +19,7 @@ use diagnostics::{Span, SpanReporter};
 //
 
 /// A scanned token with extents information.
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ScannedToken {
     /// The token itself.
     pub tok: Token,
@@ -39,7 +40,7 @@ pub struct ScannedToken {
 /// for error recovery. If a token seems to be malformed the scanner will do its best to guess
 /// the intended meaning, report any encountered errors, and will carry on scanning if possible.
 /// However, a scanner will never reconsider its decisions about what it saw and where it was.
-pub trait Scanner<'a> {
+pub trait Scanner {
     /// Checks whether the end of token stream has been reached.
     /// If it is reached, the scanner will produce only `Token::EOF`.
     fn at_eof(&self) -> bool;
@@ -91,10 +92,10 @@ pub struct StringScanner<'a> {
     //
 
     /// Our designated responsible for diagnostic processing.
-    report: &'a SpanReporter<'a>,
+    report: &'a SpanReporter,
 }
 
-impl<'a> Scanner<'a> for StringScanner<'a> {
+impl<'a> Scanner for StringScanner<'a> {
     fn at_eof(&self) -> bool {
         self.cur.is_none()
     }
@@ -107,7 +108,7 @@ impl<'a> Scanner<'a> for StringScanner<'a> {
 impl<'a> StringScanner<'a> {
     /// Makes a new scanner for the given string which will report scanning errors
     /// to the given reporter.
-    pub fn new<'b>(s: &'b str, reporter: &'b SpanReporter<'b>) -> StringScanner<'b> {
+    pub fn new<'b>(s: &'b str, reporter: &'b SpanReporter) -> StringScanner<'b> {
         let mut scanner = StringScanner {
             buf: s,
             cur: None, pos: 0, prev_pos: 0,
@@ -149,6 +150,22 @@ impl<'a> StringScanner<'a> {
         self.buf[self.pos..].chars().nth(1)
     }
 
+    /// Skip over an expected sequence of characters.
+    fn expect_and_skip(&mut self, expected: &str) {
+        assert!(self.buf[self.prev_pos..].starts_with(expected));
+        for _ in 0..expected.len() { self.read(); }
+    }
+
+    /// Check whether current character (`cur`) is `c`.
+    fn cur_is(&self, c: char) -> bool {
+        self.cur == Some(c)
+    }
+
+    /// Check whether next character (`peek()`) is `c`.
+    fn peek_is(&self, c: char) -> bool {
+        self.peek() == Some(c)
+    }
+
     /// Extract the next token from the stream.
     fn next(&mut self) -> ScannedToken {
         if self.at_eof() {
@@ -178,10 +195,10 @@ impl<'a> StringScanner<'a> {
             ' ' | '\t' | '\n' | '\r' => {
                 self.scan_whitespace()
             }
-            '/' if self.peek() == Some('/') => {
+            '/' if self.peek_is('/') => {
                 self.scan_line_comment()
             }
-            '/' if self.peek() == Some('*') => {
+            '/' if self.peek_is('*') => {
                 self.scan_block_comment()
             }
             '(' => { self.read(); Token::Lparen }
@@ -251,13 +268,10 @@ impl<'a> StringScanner<'a> {
     /// Scan over a line comment.
     fn scan_line_comment(&mut self) -> Token {
         // Line comments start with two consecutive slashes
-        assert!(self.cur == Some('/') && self.peek() == Some('/'));
-        self.read();
-        self.read();
+        self.expect_and_skip("//");
 
         // '///' and '//!' indicate documentation comments, but '////...' does not.
-        let doc_comment = (self.cur == Some('!')) ||
-            ((self.cur == Some('/')) && (self.peek() != Some('/')));
+        let doc_comment = self.cur_is('!') || (self.cur_is('/') && !self.peek_is('/'));
 
         while !self.at_eof() {
             match self.cur.unwrap() {
@@ -266,7 +280,7 @@ impl<'a> StringScanner<'a> {
                     self.read();
                     break;
                 }
-                '\r' if self.peek() == Some('\n') => {
+                '\r' if self.peek_is('\n') => {
                     self.read();
                     self.read();
                     break;
@@ -296,21 +310,19 @@ impl<'a> StringScanner<'a> {
     /// Scan a block comment.
     fn scan_block_comment(&mut self) -> Token {
         // Block comments start with a slash followed by an asterisk
-        assert!(self.cur == Some('/') && self.peek() == Some('*'));
-        self.read();
-        self.read();
+        self.expect_and_skip("/*");
 
         // '/**' and '/*!' indicate documentation comments, but '/***...' does not.
         // Also take care to treat '/**/' as a regular comment.
-        let doc_comment = (self.cur == Some('!')) ||
-            ((self.cur == Some('*')) && (self.peek() != Some('*')) && (self.peek() != Some('/')));
+        let doc_comment = self.cur_is('!') ||
+            (self.cur_is('*') && !self.peek_is('*') && !self.peek_is('/'));
 
         let mut nesting_level = 1;
 
         while !self.at_eof() {
             match self.cur.unwrap() {
                 // Block closure, scan over it and maybe stop scanning the comment
-                '*' if self.peek() == Some('/') => {
+                '*' if self.peek_is('/') => {
                     self.read();
                     self.read();
                     nesting_level -= 1;
@@ -319,14 +331,14 @@ impl<'a> StringScanner<'a> {
                     }
                 }
                 // A new block is opened, scan over it and bump the nesting level
-                '/' if self.peek() == Some('*') => {
+                '/' if self.peek_is('*') => {
                     self.read();
                     self.read();
                     nesting_level += 1;
                 }
                 // Report bare CR characters as they may have meant to be line endings,
                 // but are not treated as such in Sash.
-                '\r' if doc_comment && self.peek() != Some('\n') => {
+                '\r' if doc_comment && !self.peek_is('\n') => {
                     self.report.error(Span::new(self.prev_pos, self.pos),
                         "Bare CR characters are not allowed in documentation \
                          comments");
@@ -388,7 +400,7 @@ impl<'a> StringScanner<'a> {
         let mut integer = true;
 
         // Though, a dot after an integer may mark a floating-point literal...
-        if self.cur == Some('.') {
+        if self.cur_is('.') {
             let c = self.peek().unwrap_or('\0');
 
             // ... if it is followed by another (decimal) integer
@@ -406,7 +418,7 @@ impl<'a> StringScanner<'a> {
 
         // An 'e' may start either a floating-point exponent, or (technically) a type suffix.
         // This is ambiguous, so we resolve it by greedily favoring the exponent treatment.
-        if self.cur == Some('e') || self.cur == Some('E') {
+        if self.cur_is('e') || self.cur_is('E') {
             let c = self.peek().unwrap_or('\0');
 
             if is_digit(c, 10) || c == '_' {
@@ -478,7 +490,7 @@ impl<'a> StringScanner<'a> {
 
     /// Scan over a fractional part of a floating-point literal.
     fn scan_float_fractional_part(&mut self) {
-        assert!(is_digit(self.cur.unwrap(), 10) || self.cur == Some('_'));
+        assert!(is_digit(self.cur.unwrap(), 10) || self.cur_is('_'));
 
         let fractional_start = self.prev_pos;
         let fractional_digits = self.scan_digits(10, 10);
@@ -491,7 +503,7 @@ impl<'a> StringScanner<'a> {
 
     /// Scan over an exponent part of a floating-point literal.
     fn scan_float_exponent(&mut self) {
-        assert!(is_digit(self.cur.unwrap(), 10) || self.cur == Some('_'));
+        assert!(is_digit(self.cur.unwrap(), 10) || self.cur_is('_'));
 
         let exponent_start = self.prev_pos;
         let exponent_digits = self.scan_digits(10, 10);
@@ -507,8 +519,7 @@ impl<'a> StringScanner<'a> {
         use self::CharacterSpecials::{SingleQuote, UnexpectedTerminator};
 
         // A character literal is a single quote...
-        assert!(self.cur == Some('\''));
-        self.read();
+        self.expect_and_skip("\'");
 
         let terminated = match self.scan_one_character_of_character() {
             // ...followed by one character...
@@ -555,7 +566,7 @@ impl<'a> StringScanner<'a> {
             // in two cases: ''' (a correct character literal) and '' (incorrect empty character).
             Err(SingleQuote) => {
                 self.read();
-                if self.cur == Some('\'') {
+                if self.cur_is('\'') {
                     self.read();
                 } else {
                     self.report.error(Span::new(self.start, self.prev_pos),
@@ -583,8 +594,7 @@ impl<'a> StringScanner<'a> {
         use self::StringSpecials::{DoubleQuote, SkippedEscapedLineEnding, UnexpectedTerminator};
 
         // Strings start with a double quote...
-        assert!(self.cur == Some('"'));
-        self.read();
+        self.expect_and_skip("\"");
 
         loop {
             match self.scan_one_character_of_string() {
@@ -620,8 +630,7 @@ impl<'a> StringScanner<'a> {
         use self::SymbolSpecials::{Backquote, UnexpectedTerminator};
 
         // Symbols start with a backquote...
-        assert!(self.cur == Some('`'));
-        self.read();
+        self.expect_and_skip("`");
 
         loop {
             match self.scan_one_character_of_symbol() {
@@ -670,7 +679,7 @@ impl<'a> StringScanner<'a> {
             Some('\n') => {
                 return Err(UnexpectedTerminator);
             }
-            Some('\r') if self.peek() == Some('\n') => {
+            Some('\r') if self.peek_is('\n') => {
                 return Err(UnexpectedTerminator);
             }
             // Characters are correctly terminated by a single quote character. But they may also
@@ -719,7 +728,7 @@ impl<'a> StringScanner<'a> {
                 self.read();
                 return Ok('\n');
             }
-            Some('\r') if self.peek() == Some('\n') => {
+            Some('\r') if self.peek_is('\n') => {
                 self.read(); // TODO: this may cause issues if read() is taught to skip over
                 self.read(); //       Windows line endings as a single character
                 return Ok('\n');
@@ -774,7 +783,7 @@ impl<'a> StringScanner<'a> {
             Some('\n') => {
                 return Err(UnexpectedTerminator);
             }
-            Some('\r') if self.peek() == Some('\n') => {
+            Some('\r') if self.peek_is('\n') => {
                 return Err(UnexpectedTerminator);
             }
             // Symbols are correctly terminated by a backquote character. But they may also
@@ -827,7 +836,7 @@ impl<'a> StringScanner<'a> {
             // There are a couple of exceptions, though. Comments are delimited by characters from
             // mark identifier set. However, sequences "/*" and "//" are not allowed in them.
             // Non-mark identifiers form a boundary when followed by these characters
-            Some('/') if (self.peek() == Some('/') || self.peek() == Some('*')) => {
+            Some('/') if (self.peek_is('/') || self.peek_is('*')) => {
                 return Err(Terminator);
             }
             // Also, dots may or may not be constituents of mark identifiers. However, here
@@ -856,8 +865,7 @@ impl<'a> StringScanner<'a> {
     /// or a special indicator value.
     fn scan_character_escape_sequence(&mut self) -> Result<char, CharacterSpecials> {
         // All escape sequences start with a backslash
-        assert!(self.cur == Some('\\'));
-        self.read();
+        self.expect_and_skip("\\");
 
         match self.cur {
             // \u... is a universal marker of a Unicode escape
@@ -881,7 +889,7 @@ impl<'a> StringScanner<'a> {
             Some('\n') | Some('\'') | None => {
                 return Ok('\\');
             }
-            Some('\r') if self.peek() == Some('\n') => {
+            Some('\r') if self.peek_is('\n') => {
                 return Ok('\\');
             }
 
@@ -911,8 +919,7 @@ impl<'a> StringScanner<'a> {
         use self::StringSpecials::{SkippedEscapedLineEnding, UnexpectedTerminator};
 
         // All escape sequences start with a backslash
-        assert!(self.cur == Some('\\'));
-        self.read();
+        self.expect_and_skip("\\");
 
         match self.cur {
             // \u... is a universal marker of a Unicode escape
@@ -936,7 +943,7 @@ impl<'a> StringScanner<'a> {
                 self.scan_whitespace();
                 return Err(SkippedEscapedLineEnding);
             }
-            Some('\r') if self.peek() == Some('\n') => {
+            Some('\r') if self.peek_is('\n') => {
                 self.scan_whitespace();
                 return Err(SkippedEscapedLineEnding);
             }
@@ -974,8 +981,7 @@ impl<'a> StringScanner<'a> {
         use self::SymbolSpecials::{UnexpectedTerminator};
 
         // All escape sequences start with a backslash
-        assert!(self.cur == Some('\\'));
-        self.read();
+        self.expect_and_skip("\\");
 
         match self.cur {
             // \u... is a universal marker of a Unicode escape
@@ -1001,7 +1007,7 @@ impl<'a> StringScanner<'a> {
             Some('\n') | None => {
                 return Err(UnexpectedTerminator);
             }
-            Some('\r') if self.peek() == Some('\n') => {
+            Some('\r') if self.peek_is('\n') => {
                 return Err(UnexpectedTerminator);
             }
 
@@ -1031,8 +1037,7 @@ impl<'a> StringScanner<'a> {
         use self::IdentifierSpecials::{IncorrectUnicodeEscape, AsciiUnicodeEscape};
 
         // All escape sequences start with a backslash
-        assert!(self.cur == Some('\\'));
-        self.read();
+        self.expect_and_skip("\\");
 
         match self.cur {
             // \u... is a universal marker of a Unicode escape
@@ -1065,8 +1070,8 @@ impl<'a> StringScanner<'a> {
 
     /// Scan over a single byte escape sequence. Returns its value.
     fn scan_escape_byte(&mut self) -> char {
-        assert!(self.cur == Some('x'));
-        self.read();
+        // Byte escapes start with \x, we have already seen the backslash
+        self.expect_and_skip("x");
 
         let mut digits = 0;
         let mut value: u8 = 0;
@@ -1105,8 +1110,8 @@ impl<'a> StringScanner<'a> {
     /// Returns Some value of the escape sequence, or None if the sequence was legible
     /// but otherwise incorrect.
     fn scan_escape_unicode(&mut self, extra_delimiter: Option<char>) -> Option<char> {
-        assert!(self.cur == Some('u'));
-        self.read();
+        // Unicode escapes start with \u, we have already seen the backslash
+        self.expect_and_skip("u");
 
         let brace_start = self.prev_pos;
 
@@ -1145,7 +1150,7 @@ impl<'a> StringScanner<'a> {
                     missing_close = true;
                     break;
                 }
-                Some('\r') if self.peek() == Some('\n') => {
+                Some('\r') if self.peek_is('\n') => {
                     missing_close = true;
                     break;
                 }
@@ -1249,8 +1254,8 @@ impl<'a> StringScanner<'a> {
     /// In case of success the scanner state is set to the opening quote. If the character string
     /// does not look like a raw string, the scanner is stopped right after the `r` character.
     fn scan_raw_string_leaders(&mut self) -> Option<u32> {
-        assert!(self.cur == Some('r'));
-        self.read();
+        // Raw strings start with 'r'
+        self.expect_and_skip("r");
 
         // Yes. Unfortunately, we need infinite lookahead to handle this case.
         // Well, whatever, raw strings have a context-sensitive grammar.
@@ -1276,8 +1281,8 @@ impl<'a> StringScanner<'a> {
 
     /// Scan over a raw string delimited by `hash_count` hashes.
     fn scan_raw_string(&mut self, hash_count: u32) -> Token {
-        assert!(self.cur == Some('"'));
-        self.read();
+        // Raw string content starts with an double quote
+        self.expect_and_skip("\"");
 
         loop {
             match self.cur {
@@ -1318,13 +1323,13 @@ impl<'a> StringScanner<'a> {
     /// (Possibly, because `false` is also returned when EOF is reached before the sufficient
     /// number of hashes are scanner over.)
     fn scan_raw_string_trailers(&mut self, hash_count: u32) -> bool {
-        assert!(self.cur == Some('"'));
-        self.read();
+        // Raw string content ends with an double quote
+        self.expect_and_skip("\"");
 
         let mut seen = 0;
 
         while seen < hash_count {
-            if self.cur == Some('#') {
+            if self.cur_is('#') {
                 seen += 1;
                 self.read();
             } else {
@@ -1370,7 +1375,7 @@ impl<'a> StringScanner<'a> {
             // In this context, a dot must be followed by another dot, meaning a mark identifier.
             // Token::Dot should have been handled by next() before.
             Err(Dot) => {
-                assert!(self.peek() == Some('.'));
+                assert!(self.peek_is('.'));
                 return self.scan_identifier_mark('.');
             }
             // next() should have also handled these cases, so we will never get here.
@@ -1477,7 +1482,7 @@ impl<'a> StringScanner<'a> {
         let initial_token = self.scan_identifier_word(initial);
 
         // Word identifier followed by a single colon forms an implicit symbol token.
-        if (self.cur == Some(':')) && (self.peek() != Some(':')) {
+        if (self.cur_is(':')) && (self.peek() != Some(':')) {
             self.read();
             return Token::ImplicitSymbol;
         }
@@ -1532,8 +1537,8 @@ impl<'a> StringScanner<'a> {
                 // at least one more literal dot. If that is the case, scan over all these dots.
                 // Otherwise stop scanning the identifier without consuming this to-be-Token::Dot.
                 Err(Dot) => {
-                    if self.peek() == Some('.') {
-                        while self.cur == Some('.') {
+                    if self.peek_is('.') {
+                        while self.cur_is('.') {
                             self.read();
                         }
                     } else {
@@ -1619,7 +1624,7 @@ impl<'a> StringScanner<'a> {
         match self.scan_one_character_of_identifier() {
             // Special case for raw string literals immediately following some
             // other literal. Their 'r' should not be considered a type suffix.
-            Ok('r') if (self.cur == Some('"')) || (self.cur == Some('#')) => {
+            Ok('r') if (self.cur_is('"')) || (self.cur_is('#')) => {
                 self.unread('r', old_prev_pos);
             }
             // A character has been correctly scanned over. Scan over the type suffix if it looks
@@ -1763,8 +1768,6 @@ mod tests {
     use super::*;
     use tokens::{Token};
     use diagnostics::{Span, SpanReporter};
-
-    // TODO: macros to lower the amount of boilerplate and arbitrary calculations
 
     #[test]
     fn empty_string() {
@@ -4209,23 +4212,23 @@ mod tests {
 
     struct ScannerTestSlice<'a>(&'a str, Token);
 
-    struct SinkReporter<'a> {
-        pub errors: RefCell<Vec<(Span, &'a str)>>,
-        pub warnings: RefCell<Vec<(Span, &'a str)>>,
+    struct SinkReporter {
+        pub errors: RefCell<Vec<Span>>,
+        pub warnings: RefCell<Vec<Span>>,
     }
 
-    impl<'a> SpanReporter<'a> for SinkReporter<'a> {
-        fn error(&self, span: Span, message: &'a str) {
-            self.errors.borrow_mut().push((span, message));
+    impl SpanReporter for SinkReporter {
+        fn error(&self, span: Span, _: &str) {
+            self.errors.borrow_mut().push(span);
         }
 
-        fn warning(&self, span: Span, message: &'a str) {
-            self.warnings.borrow_mut().push((span, message));
+        fn warning(&self, span: Span, _: &str) {
+            self.warnings.borrow_mut().push(span);
         }
     }
 
-    impl<'a> SinkReporter<'a> {
-        fn new<'b>() -> SinkReporter<'b> {
+    impl SinkReporter {
+        fn new() -> SinkReporter {
             SinkReporter {
                 errors: RefCell::new(Vec::new()),
                 warnings: RefCell::new(Vec::new()),
@@ -4233,67 +4236,171 @@ mod tests {
         }
     }
 
-    fn check(slices: &[ScannerTestSlice], error_spans: &[Span], warning_spans: &[Span]) {
-        let whole_string = {
-            let mut t = String::new();
-            for &ScannerTestSlice(s, _) in slices {
-                t.push_str(s);
-            }
-            t
-        };
-        let end = whole_string.len();
+    /// Checks whether a sequence of test string slices yields consistent results and generates
+    /// expected diagnostics.
+    fn check(slices: &[ScannerTestSlice], expected_errors: &[Span], expected_warnings: &[Span]) {
+        let (test_string, expected_tokens) = expand_test_slices(slices);
 
-        let mut tok_iter = 1;
-        let mut byte_iter = 0;
+        let (actual_tokens, actual_errors, actual_warnings) = process_test_string(&test_string);
 
-        let sink = SinkReporter::new();
+        let token_failures =
+            verify("Tokens", &test_string, &expected_tokens, &actual_tokens, token_as_str);
 
-        let mut scanner = StringScanner::new(whole_string.as_ref(), &sink);
+        let error_failures =
+            verify("Errors", &test_string, expected_errors, &actual_errors, span_as_str);
 
+        let warning_failures =
+            verify("Warnings", &test_string, expected_warnings, &actual_warnings, span_as_str);
+
+        if let Some(first_failure) = token_failures {
+            panic!("first invalid token: #{}", first_failure);
+        }
+
+        if let Some(first_failure) = error_failures {
+            panic!("first invalid error: #{}", first_failure);
+        }
+
+        if let Some(first_failure) = warning_failures {
+            panic!("first invalid warning: #{}", first_failure);
+        }
+    }
+
+    /// Preprocesses test slices, returning the whole string to be scanned over
+    /// and the list of expected tokens with their respective spans.
+    fn expand_test_slices(slices: &[ScannerTestSlice]) -> (String, Vec<ScannedToken>) {
+        let mut all_str = String::new();
+        let mut all_tok = Vec::new();
+
+        let mut bytes = 0;
         for &ScannerTestSlice(s, ref t) in slices {
-            check_token(&scanner.next_token(), tok_iter, t,
-                        &Span::new(byte_iter, byte_iter + s.len()));
-
-            tok_iter += 1;
-            byte_iter += s.len();
+            all_str.push_str(s);
+            all_tok.push(ScannedToken {
+                tok: t.clone(),
+                span: Span::new(bytes, bytes + s.len())
+            });
+            bytes += s.len();
         }
 
-        check_token(&scanner.next_token(), tok_iter, &Token::EOF, &Span::new(end, end));
+        all_tok.push(ScannedToken { tok: Token::EOF, span: Span::new(bytes, bytes) });
 
-        check_spans("errors", error_spans, &sink.errors.borrow()[..]);
-        check_spans("warnings", warning_spans, &sink.warnings.borrow()[..]);
+        return (all_str, all_tok);
     }
 
-    fn check_token(scanned: &ScannedToken, idx: u32, kind: &Token, span: &Span) {
-        if (scanned.tok == *kind) && (scanned.span == *span) {
-            return;
+    /// Performs actual scanning of the `whole_string`, producing a list of resulting tokens
+    /// and a number of diagnostics which were emitted during scanning.
+    fn process_test_string(whole_string: &str) -> (Vec<ScannedToken>, Vec<Span>, Vec<Span>) {
+        let mut tokens = Vec::new();
+        let diagnostics = SinkReporter::new();
+
+        let mut scanner = StringScanner::new(whole_string, &diagnostics);
+
+        // Loop with postcondition to catch the EOF token
+        loop {
+            let token = scanner.next_token();
+
+            tokens.push(token.clone());
+
+            if token.tok == Token::EOF {
+                break;
+            }
         }
-        panic!("assertion failed: expected token #{} to be {:?}{} at {:?}{}",
-               idx,
-               *kind, if scanned.tok == *kind {
-                   String::new()
-               } else {
-                   format!(" (got {:?})", scanned.tok)
-               },
-               *span, if scanned.span == *span {
-                   String::new()
-               } else {
-                   format!(" (got {:?})", scanned.span)
-               }
-        );
+
+        assert!(scanner.at_eof());
+
+        let errors = diagnostics.errors.borrow().clone();
+        let warnings = diagnostics.warnings.borrow().clone();
+
+        return (tokens, errors, warnings);
     }
 
-    fn check_spans(kind: &str, expected: &[Span], actual: &[(Span, &str)]) {
-        if (expected.len() == 0) && (actual.len() > 0) {
-            panic!("assertion failed: expected no {}, but got {} of them", kind, actual.len());
+    /// Prints out and verifies produced results. Returns Some 1-based index of the first incorrect
+    /// item, or None if the actual results are equal to expected ones.
+    fn verify<T, F>(title: &str, s: &str, expected: &[T], actual: &[T], as_str: F) -> Option<u32>
+        where T: Eq, F: Fn(&str, &T) -> String
+    {
+        if expected.is_empty() && actual.is_empty() {
+            return None;
         }
 
-        // TODO: better report message and functional implementation
+        print!("\n{}\n\nindex:\n\t<expected>\n\t<actual>\n", title);
 
-        assert_eq!(expected.len(), actual.len());
+        let mut first_mismatch = None;
 
-        for i in 0..expected.len() {
-            assert_eq!(expected[i], actual[i].0);
+        for (index, (expected, actual)) in (1..).zip(longest_zip(expected, actual)) {
+            let bad = actual != expected;
+
+            if bad && first_mismatch.is_none() {
+                first_mismatch = Some(index);
+            }
+
+            print!("{index}:\n{ind_ex}\t{expected}\n{ind_act}\t{actual}\n",
+                index     = index,
+                ind_ex    = if bad { "-- exp:" } else { "" },
+                ind_act   = if bad { "-- act:" } else { "" },
+                expected  = expected.map_or("None".to_string(), |v| as_str(s, v)),
+                actual    = actual.  map_or("None".to_string(), |v| as_str(s, v)),
+            );
         }
+
+        return first_mismatch;
+    }
+
+    fn token_as_str(s: &str, token: &ScannedToken) -> String {
+        format!("{token:?} {slice:?} @ [{from}, {to}]",
+            token = token.tok,
+            slice = &s[token.span.from..token.span.to],
+            from  = token.span.from,
+            to    = token.span.to,
+        )
+    }
+
+    fn span_as_str(s: &str, span: &Span) -> String {
+        format!("{slice:?} @ [{from}, {to}]",
+            slice = &s[span.from..span.to],
+            from  = span.from,
+            to    = span.to,
+        )
+    }
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // Test utilities
+
+    struct LongestZip<A, B> {
+        a: A,
+        b: B,
+    }
+
+    impl<A, B> Iterator for LongestZip<A, B> where A: Iterator, B: Iterator {
+        type Item = (Option<A::Item>, Option<B::Item>);
+
+        fn next(&mut self) -> Option<Self::Item> {
+            let v_a = self.a.next();
+            let v_b = self.b.next();
+
+            if v_a.is_some() || v_b.is_some() {
+                return Some((v_a, v_b));
+            } else {
+                return None;
+            }
+        }
+    }
+
+    /// Returns an iterator which simulataneously walks over two other iterators until _both_ of
+    /// them are exhausted. It is similar to `zip()` method of `Iterator`, but it does not stop
+    /// when one of the iterators in exhausted.
+    ///
+    /// Example:
+    /// ```
+    /// assert_eq!(longest_zip(&[1, 2, 3], &[5, 6]).collect::<Vec<_>>(),
+    ///     &[
+    ///         (Some(&1), Some(&5)),
+    ///         (Some(&2), Some(&6)),
+    ///         (Some(&3), None)
+    ///     ]);
+    /// ```
+    fn longest_zip<A, B>(iter1: A, iter2: B) -> LongestZip<A::IntoIter, B::IntoIter>
+        where A: IntoIterator, B: IntoIterator
+    {
+        LongestZip { a: iter1.into_iter(), b: iter2.into_iter() }
     }
 }
