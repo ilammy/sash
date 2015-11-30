@@ -289,7 +289,7 @@ impl<'a> StringScanner<'a> {
                 // but are not treated as such in Sash.
                 '\r' => {
                     self.report.error(Span::new(self.prev_pos, self.pos),
-                        "Bare CR character encountered in a line comment.");
+                        "bare CR is not allowed in line comments");
                     self.read();
                 }
                 // Skip over anything else, we're scanning a comment
@@ -333,8 +333,7 @@ impl<'a> StringScanner<'a> {
                 // but are not treated as such in Sash.
                 '\r' if doc_comment && !self.peek_is('\n') => {
                     self.report.error(Span::new(self.prev_pos, self.pos),
-                        "Bare CR characters are not allowed in documentation \
-                         comments");
+                        "bare CR is not allowed in documentation comments");
                     self.read();
                 }
                 // Skip over anything else, we're scanning a comment
@@ -344,13 +343,11 @@ impl<'a> StringScanner<'a> {
 
         if nesting_level > 0 {
             if doc_comment {
-                self.report.fatal(Span::new(self.start, self.pos),
-                    "Unexpected end of file while reading a documentation comment. \
-                     Please look for the missing block comment closure */");
+                self.report.fatal(Span::new(self.start, self.prev_pos),
+                    "unterminated block comment, expected '*/'");
             } else {
-                self.report.fatal(Span::new(self.start, self.pos),
-                    "Unexpected end of file while reading a block comment. \
-                     Please look for the missing block comment closure */");
+                self.report.fatal(Span::new(self.start, self.prev_pos),
+                    "unterminated documentation comment, expected '*/'");
             }
 
             return Token::Unrecognized;
@@ -383,10 +380,10 @@ impl<'a> StringScanner<'a> {
             _ => { unreachable!(); }
         };
 
-        // The integer part may contain no valid digits, like in "0o999" or "0x__"
+        // The integer part may contain no digits, like in "0x__"
         if digits == 0 {
             self.report.error(Span::new(self.start, self.prev_pos),
-                "The number contains no valid digits");
+                "number contains no digits");
         }
 
         // According to what we have seen up to this point, it is integer
@@ -442,7 +439,7 @@ impl<'a> StringScanner<'a> {
         // Some late check for floating-point base. We do not support binary literals for floats.
         if !integer && (base != 10) {
             self.report.error(Span::new(self.start, self.prev_pos),
-                "Float number must be decimal");
+                "only decimal base is supported for floating-point numbers");
         }
 
         return if integer { Token::Integer } else { Token::Float };
@@ -466,8 +463,13 @@ impl<'a> StringScanner<'a> {
             if c != '_' {
                 if !is_digit(c, base) {
                     if is_digit(c, allowed) {
-                        self.report.error(Span::new(self.prev_pos, self.pos),
-                            "Unexpected digit"); // TODO: better message
+                        self.report.error(Span::new(self.prev_pos, self.pos), match base {
+                            2  => format!("invalid digit '{}', expected binary '0'..'1'", c),
+                            8  => format!("invalid digit '{}', expected octal '0'..'7'", c),
+                            10 => format!("invalid digit '{}', expected decimal '0'..'9'", c),
+                            16 => format!("invalid digit '{}', expected hexadecimal '0'..'F'", c),
+                            _  => panic!("unsupported base {}", base),
+                        }.as_ref());
                     } else {
                         break;
                     }
@@ -490,7 +492,7 @@ impl<'a> StringScanner<'a> {
 
         if fractional_digits == 0 {
             self.report.error(Span::new(fractional_start, self.prev_pos),
-                "The fractional part contains no valid digits");
+                "fractional part contains no digits");
         }
     }
 
@@ -503,7 +505,7 @@ impl<'a> StringScanner<'a> {
 
         if exponent_digits == 0 {
             self.report.error(Span::new(exponent_start, self.prev_pos),
-                "The exponent contains no valid digits");
+                "exponent contains no digits");
         }
     }
 
@@ -540,7 +542,7 @@ impl<'a> StringScanner<'a> {
                                 Err(SingleQuote) => {
                                     self.read();
                                     self.report.error(Span::new(self.start, self.prev_pos),
-                                        "A character literal must contain only one character");
+                                        "more than one character in a character constant");
                                     break;
                                 }
                                 // We did not see a closing quote on the same line, abort scanning
@@ -563,7 +565,7 @@ impl<'a> StringScanner<'a> {
                     self.read();
                 } else {
                     self.report.error(Span::new(self.start, self.prev_pos),
-                        "A character literal must contain a character");
+                        "missing character in a character constant");
                 }
                 true
             }
@@ -572,7 +574,7 @@ impl<'a> StringScanner<'a> {
 
         if !terminated {
             self.report.fatal(Span::new(self.start, self.prev_pos),
-                    "Missing closing single quote.");
+                "unterminated character constant, expected a closing single quote (')");
 
             return Token::Unrecognized;
         }
@@ -605,8 +607,8 @@ impl<'a> StringScanner<'a> {
                 // But things go wrong sometimes and the string may not be terminated
                 Err(UnexpectedTerminator) => {
                     // For strings there is only one way to get here: end of the stream
-                    self.report.fatal(Span::new(self.start, self.pos),
-                        "Missing closing double quote.");
+                    self.report.fatal(Span::new(self.start, self.prev_pos),
+                        "unterminated string, expected a closing double quote (\")");
 
                     return Token::Unrecognized;
                 }
@@ -639,7 +641,7 @@ impl<'a> StringScanner<'a> {
                 // But things go wrong sometimes and the symbol may not be terminated
                 Err(UnexpectedTerminator) => {
                     self.report.fatal(Span::new(self.start, self.prev_pos),
-                        "Missing closing backquote.");
+                        "unterminated symbol name, expected a closing backquote (`)");
 
                     return Token::Unrecognized;
                 }
@@ -689,7 +691,7 @@ impl<'a> StringScanner<'a> {
                 // contents. None of the popular operating systems uses bare CRs as line endings.
                 if c == '\r' {
                     self.report.error(Span::new(self.prev_pos, self.pos),
-                        "Bare CR characters must be escaped");
+                        "CR must be escaped in character constants: \\r");
                 }
                 self.read();
                 return Ok(c);
@@ -740,7 +742,7 @@ impl<'a> StringScanner<'a> {
                 // contents. None of the popular operating systems uses bare CRs as line endings.
                 if c == '\r' {
                     self.report.error(Span::new(self.prev_pos, self.pos),
-                        "Bare CR characters must be escaped");
+                        "bare CR is not allowed in strings, use \\r instead");
                 }
                 self.read();
                 return Ok(c);
@@ -793,7 +795,7 @@ impl<'a> StringScanner<'a> {
                 // contents. None of the popular operating systems uses bare CRs as line endings.
                 if c == '\r' {
                     self.report.error(Span::new(self.prev_pos, self.pos),
-                        "Bare CR characters must be escaped");
+                        "CR must be escaped in symbol names: \\r");
                 }
                 self.read();
                 return Ok(c);
@@ -894,10 +896,10 @@ impl<'a> StringScanner<'a> {
                 // into the character or the string being scanned.
                 if c == '\r' {
                     self.report.error(Span::new(self.prev_pos, self.pos),
-                        "Bare CR character");
+                        "CR must be escaped in character constants: \\r");
                 }
                 self.report.error(Span::new(self.prev_pos - 1, self.pos),
-                    "Unknown escape sequence");
+                    "unknown escape sequence");
                 self.read();
                 return Ok(c);
             }
@@ -949,10 +951,10 @@ impl<'a> StringScanner<'a> {
                 // into the character or the string being scanned.
                 if c == '\r' {
                     self.report.error(Span::new(self.prev_pos, self.pos),
-                        "Bare CR character");
+                        "CR must be escaped in strings: \\r");
                 }
                 self.report.error(Span::new(self.prev_pos - 1, self.pos),
-                    "Unknown escape sequence");
+                    "unknown escape sequence");
                 self.read();
                 return Ok(c);
             }
@@ -1012,10 +1014,10 @@ impl<'a> StringScanner<'a> {
                 // into the symbol being scanned.
                 if c == '\r' {
                     self.report.error(Span::new(self.prev_pos, self.pos),
-                        "Bare CR character");
+                        "CR must be escaped in symbol names: \\r");
                 }
                 self.report.error(Span::new(self.prev_pos - 1, self.pos),
-                    "Unknown escape sequence");
+                    "unknown escape sequence");
                 self.read();
                 return Ok(c);
             }
@@ -1069,7 +1071,7 @@ impl<'a> StringScanner<'a> {
         let mut digits = 0;
         let mut value: u8 = 0;
 
-        let digits_start = self.prev_pos;
+        let escape_start = self.prev_pos - 2; // unwinding "\x"
         while !self.at_eof() {
             let c = self.cur.unwrap();
             if !is_digit(c, 16) {
@@ -1084,12 +1086,12 @@ impl<'a> StringScanner<'a> {
         let digits_end = self.prev_pos;
 
         if digits != 2 {
-            self.report.error(Span::new(digits_start, digits_end),
-                "Expected two hexadecimal digits.");
+            self.report.error(Span::new(escape_start, digits_end),
+                "expected exactly two hexadecimal digits in a byte escape (e.g., \\x3A)");
         } else {
             if value > 0x7F {
-                self.report.error(Span::new(digits_start - 2, digits_end),
-                    "\\x?? escapes can only be used for ASCII values");
+                self.report.error(Span::new(escape_start, digits_end),
+                    "byte escapes can only encode ASCII characters (\\x00..\\x7F)");
             }
         }
 
@@ -1106,6 +1108,7 @@ impl<'a> StringScanner<'a> {
         // Unicode escapes start with \u, we have already seen the backslash
         self.expect_and_skip("u");
 
+        let escape_start = self.prev_pos - 2; // unwinding "\u"
         let brace_start = self.prev_pos;
 
         // Unicode scalar value should be braced, so it must start with a '{'
@@ -1191,44 +1194,51 @@ impl<'a> StringScanner<'a> {
 
         let brace_end = self.prev_pos;
 
+        let surrogate_code_point = (0xD800 <= value) && (value <= 0xDFFF);
+
         // Keep our mouth shut about missing/asymmetric braces if there is nothing in them anyway
         if empty_braces {
             self.report.error(Span::new(brace_start, brace_end),
-                "Missing Unicode scalar value");
+                "invalid Unicode character escape: missing character value");
+
             return None;
         }
 
-        match (missing_open, missing_close) {
-            (true, false) => {
-                self.report.error(Span::new(brace_start, brace_start),
-                    "Unicode scalar value must start with '{'");
-            }
-            (false, true) => {
-                self.report.error(Span::new(brace_end, brace_end),
-                    "Unicode scalar value must end with '}'");
-            }
-            (true, true) => {
-                self.report.error(Span::new(brace_start, brace_end),
-                    "Unicode scalar value must be surrounded with '{' '}'"); // TODO: message
-            }
-            (false, false) => { }
+        if missing_open || missing_close {
+            let invalid_unicode = invalid_hex || unicode_overflow || surrogate_code_point;
+            let model_value = if invalid_unicode { 0x2468 } else { value };
+
+            self.report.error(
+                match (missing_open, missing_close) {
+                    (true, true) => Span::new(brace_start, brace_end),
+                    (true, false) => Span::new(brace_start, brace_start),
+                    (false, true) => Span::new(brace_end, brace_end),
+                    (false, false) => unreachable!(),
+                },
+                format!("Unicode scalar value must be surrounded with braces: \
+                         \\u{{{:X}}}", model_value).as_ref());
         }
 
         if invalid_hex {
-            self.report.error(Span::new(brace_start, brace_end),
-                "Incorrect Unicode scalar value. Expected only hex digits");
+            self.report.error(Span::new(escape_start, brace_end),
+                "invalid Unicode character escape: expected only hexadecimal digits");
+
             return None;
         }
 
         if unicode_overflow {
-            self.report.error(Span::new(brace_start - 2, brace_end),
-                "Incorrect Unicode scalar value. Out of range, too big"); // TODO: messages
+            self.report.error(Span::new(escape_start, brace_end),
+                "invalid Unicode character escape: character value cannot be larger \
+                 than \\u{10FFFF}");
+
             return None;
         }
 
-        if (0xD800 <= value) && (value <= 0xDFFF) {
-            self.report.error(Span::new(brace_start - 2, brace_end),
-                "Incorrect Unicode scalar value. Surrogate"); // TODO: messages
+        if surrogate_code_point {
+            self.report.error(Span::new(escape_start, brace_end),
+                "invalid Unicode character escape: character values in range from \\u{D800} \
+                 to \\u{DFFF} inclusive (surrogate code points) are not allowed");
+
             return None;
         }
 
@@ -1287,14 +1297,19 @@ impl<'a> StringScanner<'a> {
                 Some(c) => {
                     if c == '\r' && self.peek() != Some('\n') {
                         self.report.error(Span::new(self.prev_pos, self.pos),
-                            "Bare CR character");
+                            "bare CR is not allowed in raw strings, use \\r instead");
                     }
                     self.read();
                 }
                 None => {
-                    self.report.fatal(Span::new(self.start, self.pos),
-                        "Unexpected EOF. Expected end of raw string");
-                    // TODO: output expected number of hashes
+                    self.report.fatal(Span::new(self.start, self.prev_pos),
+                        match hash_count {
+                            0 => format!("unterminated raw string, expected a double quote (\")"),
+                            1 => format!("unterminated raw string, expected a double quote \
+                                        followed by a hash (\"#)"),
+                            _ => format!("unterminated raw string, expected a double quote (\") \
+                                          followed by {} hashes (#)", hash_count),
+                    }.as_ref());
 
                     return Token::Unrecognized;
                 }
@@ -1404,7 +1419,7 @@ impl<'a> StringScanner<'a> {
         }
 
         self.report.error(Span::new(self.start, self.prev_pos),
-            "Incomprehensible character sequence");
+            "incomprehensible character sequence");
 
         return Token::Unrecognized;
     }
@@ -1441,7 +1456,8 @@ impl<'a> StringScanner<'a> {
                     // If this does not seem to be a valid continuation character, just report it,
                     // greedily eat it, and go on scanning, pretending that this was an accident.
                     self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                        "Incorrect identifier character");
+                        format!("this character not allowed in word identifiers: \
+                                 '{}' (U+{:04X})", c, c as u32).as_ref());
                 }
                 // The same is true for invalid Unicode escapes, just carry on scanning.
                 // Don't report the error, the user already knows about malformed Unicode
@@ -1450,7 +1466,7 @@ impl<'a> StringScanner<'a> {
                 // For ASCII escapes it's also true, but we need a message
                 Err(AsciiUnicodeEscape) => {
                     self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                        "ASCII is not allowed in identifier Unicode fallback");
+                        "escaped ASCII is not allowed in identifiers");
                 }
                 // Decimal digits are valid contiuations of word identifiers
                 Err(Digit) => {
@@ -1515,7 +1531,8 @@ impl<'a> StringScanner<'a> {
                     // If this does not seem to be a valid continuation character, just report it,
                     // greedily eat it, and go on scanning, pretending that this was an accident.
                     self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                        "Incorrect identifier character");
+                        format!("this character not allowed in mark identifiers: \
+                                 '{}' (U+{:04X})", c, c as u32).as_ref());
                 }
                 // The same is true for invalid Unicode escapes, just carry on scanning.
                 // Don't report the error, the user already knows about malformed Unicode
@@ -1524,7 +1541,7 @@ impl<'a> StringScanner<'a> {
                 // For ASCII escapes it's also true, but we need a message
                 Err(AsciiUnicodeEscape) => {
                     self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                        "ASCII is not allowed in identifier Unicode fallback");
+                        "escaped ASCII is not allowed in identifiers");
                 }
                 // We have seen a literal dot. It is allowed in marks as long as it is followed by
                 // at least one more literal dot. If that is the case, scan over all these dots.
@@ -1579,10 +1596,12 @@ impl<'a> StringScanner<'a> {
                     // for combining modifiers which are allowed in all other identifier kinds.
                     if category.is(QUOTE_CONTINUE) {
                         self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                            "Combining modifiers are not allowed after quotes");
+                            format!("combining modifiers are not allowed in quote identifiers: \
+                                 ' {}' (U+{:04X})", c, c as u32).as_ref());
                     } else {
                         self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                            "Incorrect identifier character");
+                            format!("this character not allowed in quote identifiers: \
+                                 '{}' (U+{:04X})", c, c as u32).as_ref());
                     }
                 }
                 // The same is true for invalid Unicode escapes, just carry on scanning.
@@ -1592,7 +1611,7 @@ impl<'a> StringScanner<'a> {
                 // For ASCII escapes it's also true, but we need a message
                 Err(AsciiUnicodeEscape) => {
                     self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                        "ASCII is not allowed in identifier Unicode fallback");
+                        "escaped ASCII is not allowed in identifiers");
                 }
                 // A clean termiantor of an identifier has been seen.
                 // This includes decimal digits and dots for quote identifiers.
@@ -2560,7 +2579,7 @@ mod tests {
         check(&[ ScannerTestSlice("'a",     Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
         check(&[ ScannerTestSlice("'\\",    Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
         check(&[ ScannerTestSlice("'\t",    Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
-        check(&[ ScannerTestSlice("'\\x",   Token::Unrecognized) ], &[ Span::new(3, 3) ],
+        check(&[ ScannerTestSlice("'\\x",   Token::Unrecognized) ], &[ Span::new(1, 3) ],
                                                                     &[ Span::new(0, 3) ]);
         check(&[ ScannerTestSlice("'\\y",   Token::Unrecognized) ], &[ Span::new(1, 3) ],
                                                                     &[ Span::new(0, 3) ]);
@@ -2605,7 +2624,7 @@ mod tests {
             ScannerTestSlice(r"'\x123'",   Token::Character),
             ScannerTestSlice(r" ",         Token::Whitespace),
             ScannerTestSlice(r"'\u{}'",    Token::Character),
-        ], &[ Span::new(3, 3), Span::new(8, 9), Span::new(14, 17), Span::new(22, 24) ], &[]);
+        ], &[ Span::new(1, 3), Span::new(6, 9), Span::new(12, 17), Span::new(22, 24) ], &[]);
     }
 
     // A similar heuristic is used for missing curly braces.
@@ -2634,9 +2653,9 @@ mod tests {
             ScannerTestSlice("\n",                      Token::Whitespace),
             ScannerTestSlice(r"'\u{more missing",       Token::Unrecognized),
         ], &[
-            Span::new(  7,   7), Span::new( 12,  13), Span::new( 18,  24), Span::new( 34,  34),
-            Span::new( 29,  34), Span::new( 39,  57), Span::new( 79,  79), Span::new( 62,  79),
-            Span::new( 97,  97), Span::new( 84,  97), Span::new(114, 114), Span::new(101, 114),
+            Span::new(  7,   7), Span::new( 12,  13), Span::new( 16,  24), Span::new( 34,  34),
+            Span::new( 27,  34), Span::new( 37,  57), Span::new( 79,  79), Span::new( 60,  79),
+            Span::new( 97,  97), Span::new( 82,  97), Span::new(114, 114), Span::new( 99, 114),
         ], &[
             Span::new( 81,  97), Span::new( 98, 114),
         ]);
@@ -2896,7 +2915,7 @@ mod tests {
         check(&[ ScannerTestSlice("\"a",     Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
         check(&[ ScannerTestSlice("\"\\",    Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
         check(&[ ScannerTestSlice("\"\t",    Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
-        check(&[ ScannerTestSlice("\"\\x",   Token::Unrecognized) ], &[ Span::new(3, 3) ],
+        check(&[ ScannerTestSlice("\"\\x",   Token::Unrecognized) ], &[ Span::new(1, 3) ],
                                                                      &[ Span::new(0, 3) ]);
         check(&[ ScannerTestSlice("\"\\y",   Token::Unrecognized) ], &[ Span::new(1, 3) ],
                                                                      &[ Span::new(0, 3) ]);
@@ -2918,7 +2937,7 @@ mod tests {
             ScannerTestSlice(r#""\x123""#, Token::String),
             ScannerTestSlice(r#" "#,       Token::Whitespace),
             ScannerTestSlice(r#""\u{}""#,  Token::String),
-        ], &[ Span::new(3, 3), Span::new(8, 9), Span::new(14, 17), Span::new(22, 24) ], &[]);
+        ], &[ Span::new(1, 3), Span::new(6, 9), Span::new(12, 17), Span::new(22, 24) ], &[]);
     }
 
     #[test]
@@ -2950,12 +2969,12 @@ mod tests {
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
             ScannerTestSlice(r#""\u{check missing"#,                        Token::Unrecognized),
         ], &[
-            Span::new(  7,   7), Span::new( 12,  13), Span::new( 18,  24), Span::new( 34,  34),
-            Span::new( 29,  34), Span::new( 39,  57), Span::new( 79,  79), Span::new( 62,  79),
-            Span::new( 97,  97), Span::new( 84,  97), Span::new(137, 137), Span::new(124, 137),
-            Span::new(158, 184), Span::new(199, 199), Span::new(189, 199), Span::new(222, 222),
-            Span::new(212, 222), Span::new(242, 242), Span::new(234, 242), Span::new(242, 244),
-            Span::new(263, 263), Span::new(249, 263),
+            Span::new(  7,   7), Span::new( 12,  13), Span::new( 16,  24), Span::new( 34,  34),
+            Span::new( 27,  34), Span::new( 37,  57), Span::new( 79,  79), Span::new( 60,  79),
+            Span::new( 97,  97), Span::new( 82,  97), Span::new(137, 137), Span::new(122, 137),
+            Span::new(156, 184), Span::new(199, 199), Span::new(187, 199), Span::new(222, 222),
+            Span::new(210, 222), Span::new(242, 242), Span::new(232, 242), Span::new(242, 244),
+            Span::new(263, 263), Span::new(247, 263),
         ], &[
             Span::new(246, 263),
         ]);
@@ -3065,7 +3084,7 @@ mod tests {
             ScannerTestSlice("\"\\x4500\"__",           Token::String),
             // We aren't able to test missing quotes as they are detected only at EOF
         ], &[ Span::new( 3,  4), Span::new( 8,  9), Span::new( 6,  9), Span::new(11, 13),
-              Span::new(17, 18), Span::new(26, 26), Span::new(34, 38),
+              Span::new(17, 18), Span::new(24, 26), Span::new(32, 38),
         ], &[]);
     }
 
@@ -3816,11 +3835,11 @@ mod tests {
             ScannerTestSlice(r"\u{Some}\u{Invalid}\u{Stuff}",               Token::Unrecognized),
             ScannerTestSlice(r"_123",                                       Token::Identifier),
         ], &[
-            Span::new(  4,   6), Span::new( 11,  19), Span::new( 21,  35), Span::new( 41,  65),
+            Span::new(  4,   6), Span::new( 11,  19), Span::new( 21,  35), Span::new( 39,  65),
             Span::new( 68,  76), Span::new( 76,  84), Span::new( 68,  84), Span::new( 86,  94),
             Span::new( 95, 103), Span::new(103, 111), Span::new(120, 137), Span::new(120, 137),
-            Span::new(141, 152), Span::new(161, 167), Span::new(169, 178), Span::new(180, 187),
-            Span::new(159, 187), Span::new(193, 199), Span::new(201, 210), Span::new(212, 219),
+            Span::new(139, 152), Span::new(159, 167), Span::new(167, 178), Span::new(178, 187),
+            Span::new(159, 187), Span::new(191, 199), Span::new(199, 210), Span::new(210, 219),
             Span::new(191, 219),
          ], &[]);
     }
@@ -3907,7 +3926,7 @@ mod tests {
         ], &[ Span::new(  1,   9), Span::new( 11,  19), Span::new( 20,  26), Span::new( 30,  36),
               Span::new( 37,  38), Span::new( 45,  46), Span::new( 51,  59), Span::new( 63,  71),
               Span::new( 74,  82), Span::new( 83,  91), Span::new( 93, 101), Span::new(103, 111),
-              Span::new(115, 117), Span::new(122, 145), Span::new(149, 153), Span::new(147, 153),
+              Span::new(115, 117), Span::new(120, 145), Span::new(149, 153), Span::new(147, 153),
               Span::new(155, 159), Span::new(153, 159), Span::new(160, 180),
         ], &[]);
     }
@@ -4111,7 +4130,7 @@ mod tests {
             ScannerTestSlice("C\u{20DD}_\u{20E3}:",                         Token::ImplicitSymbol),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("test\\u{003A}:",                              Token::ImplicitSymbol),
-        ], &[ Span::new(  1,   9), Span::new( 13,  15), Span::new( 25,  31), Span::new( 39,  62),
+        ], &[ Span::new(  1,   9), Span::new( 13,  15), Span::new( 25,  31), Span::new( 37,  62),
               Span::new( 68,  72), Span::new( 74,  80), Span::new( 72,  80), Span::new( 83,  86),
               Span::new( 87,  90), Span::new( 96, 104),
         ], &[]);
@@ -4157,11 +4176,11 @@ mod tests {
             ScannerTestSlice(r"`\a\b\f\v\?\'`",                             Token::ExplicitSymbol),
             ScannerTestSlice(r" ",                                          Token::Whitespace),
             ScannerTestSlice(r"`\x\x1\x1234`",                              Token::ExplicitSymbol),
-        ], &[ Span::new( 7,  7), Span::new( 9,  9), Span::new(15, 27), Span::new(32, 32),
+        ], &[ Span::new( 7,  7), Span::new( 9,  9), Span::new(13, 27), Span::new(32, 32),
               Span::new(37, 41), Span::new(35, 41), Span::new(43, 59), Span::new(41, 59),
               Span::new(61, 61), Span::new(64, 66), Span::new(66, 68), Span::new(68, 70),
-              Span::new(70, 72), Span::new(72, 74), Span::new(74, 76), Span::new(81, 81),
-              Span::new(83, 84), Span::new(86, 90),
+              Span::new(70, 72), Span::new(72, 74), Span::new(74, 76), Span::new(79, 81),
+              Span::new(81, 84), Span::new(84, 90),
         ], &[]);
     }
 
@@ -4198,7 +4217,7 @@ mod tests {
         // Unexpected EOFs are handled similar to characters and strings
         check(&[ ScannerTestSlice("`",      Token::Unrecognized) ], &[], &[ Span::new(0, 1) ]);
         check(&[ ScannerTestSlice("`xyz",   Token::Unrecognized) ], &[], &[ Span::new(0, 4) ]);
-        check(&[ ScannerTestSlice("`\\x",   Token::Unrecognized) ], &[ Span::new(3, 3) ],
+        check(&[ ScannerTestSlice("`\\x",   Token::Unrecognized) ], &[ Span::new(1, 3) ],
                                                                     &[ Span::new(0, 3) ]);
         check(&[ ScannerTestSlice("`\\u",   Token::Unrecognized) ], &[ Span::new(3, 3) ],
                                                                     &[ Span::new(0, 3) ]);
