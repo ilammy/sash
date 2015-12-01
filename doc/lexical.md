@@ -219,9 +219,12 @@ and `différence` (if you can see it) and avoids some security issues arising
 from visual ambiguity. However, normalization does not eliminate them
 completely (e.g., `foo` and `foо` are still different).
 
+> **TODO:** emit a warning when an identifier uses different scripts, then you
+> could say: '...still different, though you will be warned when such occurs'.
+
 In order to support NFKC normalization character sets of identifiers are not
 exactly equal to unions of general categories described above. Several
-characters are excluded from them to make the character sets closed over NFKC.
+characters are excluded from allowed sets to make them closed over NFKC.
 That is, to ensure that if a character sequence is an identifier of a certain
 kind then its normalized form is also a valid identifier of the same kind.
 
@@ -244,17 +247,18 @@ characters_: additional sets of exceptional characters which are added to the
 normal character sets in order to satisfy the stability requirements. For
 example, U+212E ESTIMATED SYMBOL (℮) has general category _So_ (other symbols)
 in Unicode 8.0.0. This should have placed it into mark character set, but in
-Unicode 2.0 this character was considered to be lowercase letter. Thus it is
+Unicode 2.0 this character was considered a lowercase letter. Thus it is
 included into _Other_ID_Start_ — the grandfathered set of the initial word
 characters — and ℮ is considered a valid word character.
 
-Here is a full list of current grandfathered sets for Sash identifiers:
+Here is a full list of current grandfathered sets for Sash identifiers (as of
+Unicode 8.0.0):
 
 - **words:**
   - additional starter characters:
     - U+2118 SCRIPT CAPITAL P (℘)
     - U+212E ESTIMATED SYMBOL (℮)
-  - additional continuations (includes all starters):
+  - additional continuations (includes all starters as well):
     - U+00B7 MIDDLE DOT (·)
     - U+0387 GREEK ANO TELEIA (·)
     - U+1369 ETHIOPIC DIGIT ONE (፩)
@@ -420,6 +424,8 @@ Some traditional C-style escapes are supported: `'\0'` (null, U+0000), `'\t'`
 (tab, U+0009), `'\n'` (newline, U+000A), `'\r'` (return, U+000D). Characters
 support string escapes `'\"'` and `'\\'` for copy-paste compatibility, but
 character literals for these can be written without the backslash as well.
+
+> **TODO:** what about symbol escapes `\``?
 
 Finally, any Unicode scalar value can also be written using explicit Unicode
 escapes:
