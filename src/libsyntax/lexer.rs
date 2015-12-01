@@ -288,15 +288,8 @@ impl<'a> StringScanner<'a> {
                 // Report bare CR characters as they may have meant to be line endings,
                 // but are not treated as such in Sash.
                 '\r' => {
-                    if doc_comment {
-                        self.report.error(Span::new(self.prev_pos, self.pos),
-                            "Bare CR characters are not allowed in documentation \
-                             comments");
-                    } else {
-                        self.report.warning(Span::new(self.prev_pos, self.pos),
-                            "Bare CR character encountered in a line comment. \
-                             Did you mean Windows line ending, CRLF?");
-                    }
+                    self.report.error(Span::new(self.prev_pos, self.pos),
+                        "bare CR is not allowed in line comments");
                     self.read();
                 }
                 // Skip over anything else, we're scanning a comment
@@ -340,8 +333,7 @@ impl<'a> StringScanner<'a> {
                 // but are not treated as such in Sash.
                 '\r' if doc_comment && !self.peek_is('\n') => {
                     self.report.error(Span::new(self.prev_pos, self.pos),
-                        "Bare CR characters are not allowed in documentation \
-                         comments");
+                        "bare CR is not allowed in documentation comments");
                     self.read();
                 }
                 // Skip over anything else, we're scanning a comment
@@ -351,13 +343,11 @@ impl<'a> StringScanner<'a> {
 
         if nesting_level > 0 {
             if doc_comment {
-                self.report.error(Span::new(self.start, self.pos),
-                    "Unexpected end of file while reading a documentation comment. \
-                     Please look for the missing block comment closure */");
+                self.report.fatal(Span::new(self.start, self.prev_pos),
+                    "unterminated block comment, expected '*/'");
             } else {
-                self.report.error(Span::new(self.start, self.pos),
-                    "Unexpected end of file while reading a block comment. \
-                     Please look for the missing block comment closure */");
+                self.report.fatal(Span::new(self.start, self.prev_pos),
+                    "unterminated documentation comment, expected '*/'");
             }
 
             return Token::Unrecognized;
@@ -390,10 +380,10 @@ impl<'a> StringScanner<'a> {
             _ => { unreachable!(); }
         };
 
-        // The integer part may contain no valid digits, like in "0o999" or "0x__"
+        // The integer part may contain no digits, like in "0x__"
         if digits == 0 {
             self.report.error(Span::new(self.start, self.prev_pos),
-                "The number contains no valid digits");
+                "number contains no digits");
         }
 
         // According to what we have seen up to this point, it is integer
@@ -449,7 +439,7 @@ impl<'a> StringScanner<'a> {
         // Some late check for floating-point base. We do not support binary literals for floats.
         if !integer && (base != 10) {
             self.report.error(Span::new(self.start, self.prev_pos),
-                "Float number must be decimal");
+                "only decimal base is supported for floating-point numbers");
         }
 
         return if integer { Token::Integer } else { Token::Float };
@@ -473,8 +463,13 @@ impl<'a> StringScanner<'a> {
             if c != '_' {
                 if !is_digit(c, base) {
                     if is_digit(c, allowed) {
-                        self.report.error(Span::new(self.prev_pos, self.pos),
-                            "Unexpected digit"); // TODO: better message
+                        self.report.error(Span::new(self.prev_pos, self.pos), match base {
+                            2  => format!("invalid digit '{}', expected binary '0'..'1'", c),
+                            8  => format!("invalid digit '{}', expected octal '0'..'7'", c),
+                            10 => format!("invalid digit '{}', expected decimal '0'..'9'", c),
+                            16 => format!("invalid digit '{}', expected hexadecimal '0'..'F'", c),
+                            _  => panic!("unsupported base {}", base),
+                        }.as_ref());
                     } else {
                         break;
                     }
@@ -497,7 +492,7 @@ impl<'a> StringScanner<'a> {
 
         if fractional_digits == 0 {
             self.report.error(Span::new(fractional_start, self.prev_pos),
-                "The fractional part contains no valid digits");
+                "fractional part contains no digits");
         }
     }
 
@@ -510,7 +505,7 @@ impl<'a> StringScanner<'a> {
 
         if exponent_digits == 0 {
             self.report.error(Span::new(exponent_start, self.prev_pos),
-                "The exponent contains no valid digits");
+                "exponent contains no digits");
         }
     }
 
@@ -547,7 +542,7 @@ impl<'a> StringScanner<'a> {
                                 Err(SingleQuote) => {
                                     self.read();
                                     self.report.error(Span::new(self.start, self.prev_pos),
-                                        "A character literal must contain only one character");
+                                        "more than one character in a character constant");
                                     break;
                                 }
                                 // We did not see a closing quote on the same line, abort scanning
@@ -570,7 +565,7 @@ impl<'a> StringScanner<'a> {
                     self.read();
                 } else {
                     self.report.error(Span::new(self.start, self.prev_pos),
-                        "A character literal must contain a character");
+                        "missing character in a character constant");
                 }
                 true
             }
@@ -578,8 +573,8 @@ impl<'a> StringScanner<'a> {
         };
 
         if !terminated {
-            self.report.error(Span::new(self.start, self.prev_pos),
-                    "Missing closing single quote.");
+            self.report.fatal(Span::new(self.start, self.prev_pos),
+                "unterminated character constant, expected a closing single quote (')");
 
             return Token::Unrecognized;
         }
@@ -612,8 +607,8 @@ impl<'a> StringScanner<'a> {
                 // But things go wrong sometimes and the string may not be terminated
                 Err(UnexpectedTerminator) => {
                     // For strings there is only one way to get here: end of the stream
-                    self.report.error(Span::new(self.start, self.pos),
-                        "Missing closing double quote.");
+                    self.report.fatal(Span::new(self.start, self.prev_pos),
+                        "unterminated string, expected a closing double quote (\")");
 
                     return Token::Unrecognized;
                 }
@@ -645,8 +640,8 @@ impl<'a> StringScanner<'a> {
                 }
                 // But things go wrong sometimes and the symbol may not be terminated
                 Err(UnexpectedTerminator) => {
-                    self.report.error(Span::new(self.start, self.prev_pos),
-                        "Missing closing backquote.");
+                    self.report.fatal(Span::new(self.start, self.prev_pos),
+                        "unterminated symbol name, expected a closing backquote (`)");
 
                     return Token::Unrecognized;
                 }
@@ -696,7 +691,7 @@ impl<'a> StringScanner<'a> {
                 // contents. None of the popular operating systems uses bare CRs as line endings.
                 if c == '\r' {
                     self.report.error(Span::new(self.prev_pos, self.pos),
-                        "Bare CR characters must be escaped");
+                        "CR must be escaped in character constants: \\r");
                 }
                 self.read();
                 return Ok(c);
@@ -747,7 +742,7 @@ impl<'a> StringScanner<'a> {
                 // contents. None of the popular operating systems uses bare CRs as line endings.
                 if c == '\r' {
                     self.report.error(Span::new(self.prev_pos, self.pos),
-                        "Bare CR characters must be escaped");
+                        "bare CR is not allowed in strings, use \\r instead");
                 }
                 self.read();
                 return Ok(c);
@@ -800,7 +795,7 @@ impl<'a> StringScanner<'a> {
                 // contents. None of the popular operating systems uses bare CRs as line endings.
                 if c == '\r' {
                     self.report.error(Span::new(self.prev_pos, self.pos),
-                        "Bare CR characters must be escaped");
+                        "CR must be escaped in symbol names: \\r");
                 }
                 self.read();
                 return Ok(c);
@@ -901,10 +896,10 @@ impl<'a> StringScanner<'a> {
                 // into the character or the string being scanned.
                 if c == '\r' {
                     self.report.error(Span::new(self.prev_pos, self.pos),
-                        "Bare CR character");
+                        "CR must be escaped in character constants: \\r");
                 }
                 self.report.error(Span::new(self.prev_pos - 1, self.pos),
-                    "Unknown escape sequence");
+                    "unknown escape sequence");
                 self.read();
                 return Ok(c);
             }
@@ -956,10 +951,10 @@ impl<'a> StringScanner<'a> {
                 // into the character or the string being scanned.
                 if c == '\r' {
                     self.report.error(Span::new(self.prev_pos, self.pos),
-                        "Bare CR character");
+                        "CR must be escaped in strings: \\r");
                 }
                 self.report.error(Span::new(self.prev_pos - 1, self.pos),
-                    "Unknown escape sequence");
+                    "unknown escape sequence");
                 self.read();
                 return Ok(c);
             }
@@ -1019,10 +1014,10 @@ impl<'a> StringScanner<'a> {
                 // into the symbol being scanned.
                 if c == '\r' {
                     self.report.error(Span::new(self.prev_pos, self.pos),
-                        "Bare CR character");
+                        "CR must be escaped in symbol names: \\r");
                 }
                 self.report.error(Span::new(self.prev_pos - 1, self.pos),
-                    "Unknown escape sequence");
+                    "unknown escape sequence");
                 self.read();
                 return Ok(c);
             }
@@ -1076,7 +1071,7 @@ impl<'a> StringScanner<'a> {
         let mut digits = 0;
         let mut value: u8 = 0;
 
-        let digits_start = self.prev_pos;
+        let escape_start = self.prev_pos - 2; // unwinding "\x"
         while !self.at_eof() {
             let c = self.cur.unwrap();
             if !is_digit(c, 16) {
@@ -1091,12 +1086,12 @@ impl<'a> StringScanner<'a> {
         let digits_end = self.prev_pos;
 
         if digits != 2 {
-            self.report.error(Span::new(digits_start, digits_end),
-                "Expected two hexadecimal digits.");
+            self.report.error(Span::new(escape_start, digits_end),
+                "expected exactly two hexadecimal digits in a byte escape (e.g., \\x3A)");
         } else {
             if value > 0x7F {
-                self.report.error(Span::new(digits_start - 2, digits_end),
-                    "\\x?? escapes can only be used for ASCII values");
+                self.report.error(Span::new(escape_start, digits_end),
+                    "byte escapes can only encode ASCII characters (\\x00..\\x7F)");
             }
         }
 
@@ -1113,6 +1108,7 @@ impl<'a> StringScanner<'a> {
         // Unicode escapes start with \u, we have already seen the backslash
         self.expect_and_skip("u");
 
+        let escape_start = self.prev_pos - 2; // unwinding "\u"
         let brace_start = self.prev_pos;
 
         // Unicode scalar value should be braced, so it must start with a '{'
@@ -1198,44 +1194,51 @@ impl<'a> StringScanner<'a> {
 
         let brace_end = self.prev_pos;
 
+        let surrogate_code_point = (0xD800 <= value) && (value <= 0xDFFF);
+
         // Keep our mouth shut about missing/asymmetric braces if there is nothing in them anyway
         if empty_braces {
             self.report.error(Span::new(brace_start, brace_end),
-                "Missing Unicode scalar value");
+                "invalid Unicode character escape: missing character value");
+
             return None;
         }
 
-        match (missing_open, missing_close) {
-            (true, false) => {
-                self.report.error(Span::new(brace_start, brace_start),
-                    "Unicode scalar value must start with '{'");
-            }
-            (false, true) => {
-                self.report.error(Span::new(brace_end, brace_end),
-                    "Unicode scalar value must end with '}'");
-            }
-            (true, true) => {
-                self.report.error(Span::new(brace_start, brace_end),
-                    "Unicode scalar value must be surrounded with '{' '}'"); // TODO: message
-            }
-            (false, false) => { }
+        if missing_open || missing_close {
+            let invalid_unicode = invalid_hex || unicode_overflow || surrogate_code_point;
+            let model_value = if invalid_unicode { 0x2468 } else { value };
+
+            self.report.error(
+                match (missing_open, missing_close) {
+                    (true, true) => Span::new(brace_start, brace_end),
+                    (true, false) => Span::new(brace_start, brace_start),
+                    (false, true) => Span::new(brace_end, brace_end),
+                    (false, false) => unreachable!(),
+                },
+                format!("Unicode scalar value must be surrounded with braces: \
+                         \\u{{{:X}}}", model_value).as_ref());
         }
 
         if invalid_hex {
-            self.report.error(Span::new(brace_start, brace_end),
-                "Incorrect Unicode scalar value. Expected only hex digits");
+            self.report.error(Span::new(escape_start, brace_end),
+                "invalid Unicode character escape: expected only hexadecimal digits");
+
             return None;
         }
 
         if unicode_overflow {
-            self.report.error(Span::new(brace_start - 2, brace_end),
-                "Incorrect Unicode scalar value. Out of range, too big"); // TODO: messages
+            self.report.error(Span::new(escape_start, brace_end),
+                "invalid Unicode character escape: character value cannot be larger \
+                 than \\u{10FFFF}");
+
             return None;
         }
 
-        if (0xD800 <= value) && (value <= 0xDFFF) {
-            self.report.error(Span::new(brace_start - 2, brace_end),
-                "Incorrect Unicode scalar value. Surrogate"); // TODO: messages
+        if surrogate_code_point {
+            self.report.error(Span::new(escape_start, brace_end),
+                "invalid Unicode character escape: character values in range from \\u{D800} \
+                 to \\u{DFFF} inclusive (surrogate code points) are not allowed");
+
             return None;
         }
 
@@ -1294,14 +1297,19 @@ impl<'a> StringScanner<'a> {
                 Some(c) => {
                     if c == '\r' && self.peek() != Some('\n') {
                         self.report.error(Span::new(self.prev_pos, self.pos),
-                            "Bare CR character");
+                            "bare CR is not allowed in raw strings, use \\r instead");
                     }
                     self.read();
                 }
                 None => {
-                    self.report.error(Span::new(self.start, self.pos),
-                        "Unexpected EOF. Expected end of raw string");
-                    // TODO: output expected number of hashes
+                    self.report.fatal(Span::new(self.start, self.prev_pos),
+                        match hash_count {
+                            0 => format!("unterminated raw string, expected a double quote (\")"),
+                            1 => format!("unterminated raw string, expected a double quote \
+                                        followed by a hash (\"#)"),
+                            _ => format!("unterminated raw string, expected a double quote (\") \
+                                          followed by {} hashes (#)", hash_count),
+                    }.as_ref());
 
                     return Token::Unrecognized;
                 }
@@ -1411,7 +1419,7 @@ impl<'a> StringScanner<'a> {
         }
 
         self.report.error(Span::new(self.start, self.prev_pos),
-            "Incomprehensible character sequence");
+            "incomprehensible character sequence");
 
         return Token::Unrecognized;
     }
@@ -1448,7 +1456,8 @@ impl<'a> StringScanner<'a> {
                     // If this does not seem to be a valid continuation character, just report it,
                     // greedily eat it, and go on scanning, pretending that this was an accident.
                     self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                        "Incorrect identifier character");
+                        format!("this character not allowed in word identifiers: \
+                                 '{}' (U+{:04X})", c, c as u32).as_ref());
                 }
                 // The same is true for invalid Unicode escapes, just carry on scanning.
                 // Don't report the error, the user already knows about malformed Unicode
@@ -1457,7 +1466,7 @@ impl<'a> StringScanner<'a> {
                 // For ASCII escapes it's also true, but we need a message
                 Err(AsciiUnicodeEscape) => {
                     self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                        "ASCII is not allowed in identifier Unicode fallback");
+                        "escaped ASCII is not allowed in identifiers");
                 }
                 // Decimal digits are valid contiuations of word identifiers
                 Err(Digit) => {
@@ -1522,7 +1531,8 @@ impl<'a> StringScanner<'a> {
                     // If this does not seem to be a valid continuation character, just report it,
                     // greedily eat it, and go on scanning, pretending that this was an accident.
                     self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                        "Incorrect identifier character");
+                        format!("this character not allowed in mark identifiers: \
+                                 '{}' (U+{:04X})", c, c as u32).as_ref());
                 }
                 // The same is true for invalid Unicode escapes, just carry on scanning.
                 // Don't report the error, the user already knows about malformed Unicode
@@ -1531,7 +1541,7 @@ impl<'a> StringScanner<'a> {
                 // For ASCII escapes it's also true, but we need a message
                 Err(AsciiUnicodeEscape) => {
                     self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                        "ASCII is not allowed in identifier Unicode fallback");
+                        "escaped ASCII is not allowed in identifiers");
                 }
                 // We have seen a literal dot. It is allowed in marks as long as it is followed by
                 // at least one more literal dot. If that is the case, scan over all these dots.
@@ -1586,10 +1596,12 @@ impl<'a> StringScanner<'a> {
                     // for combining modifiers which are allowed in all other identifier kinds.
                     if category.is(QUOTE_CONTINUE) {
                         self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                            "Combining modifiers are not allowed after quotes");
+                            format!("combining modifiers are not allowed in quote identifiers: \
+                                 ' {}' (U+{:04X})", c, c as u32).as_ref());
                     } else {
                         self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                            "Incorrect identifier character");
+                            format!("this character not allowed in quote identifiers: \
+                                 '{}' (U+{:04X})", c, c as u32).as_ref());
                     }
                 }
                 // The same is true for invalid Unicode escapes, just carry on scanning.
@@ -1599,7 +1611,7 @@ impl<'a> StringScanner<'a> {
                 // For ASCII escapes it's also true, but we need a message
                 Err(AsciiUnicodeEscape) => {
                     self.report.error(Span::new(old_prev_pos, self.prev_pos),
-                        "ASCII is not allowed in identifier Unicode fallback");
+                        "escaped ASCII is not allowed in identifiers");
                 }
                 // A clean termiantor of an identifier has been seen.
                 // This includes decimal digits and dots for quote identifiers.
@@ -1767,7 +1779,8 @@ fn hex_value(c: char) -> u8 {
 mod tests {
     use super::*;
     use tokens::{Token};
-    use diagnostics::{Span, SpanReporter};
+    use diagnostics;
+    use diagnostics::{Span, SpanReporter, Severity};
 
     #[test]
     fn empty_string() {
@@ -1804,7 +1817,7 @@ mod tests {
     fn line_comment_cr() {
         check(&[
             ScannerTestSlice("// example line comment\r       \t", Token::Comment),
-        ], &[], &[Span::new(23, 24)]);
+        ], &[Span::new(23, 24)], &[]);
     }
 
     #[test]
@@ -1829,7 +1842,7 @@ mod tests {
     fn line_comment_consecutive_cr() {
         check(&[
             ScannerTestSlice("// line 1\r// line 2\r     ", Token::Comment),
-        ], &[], &[Span::new(9, 10), Span::new(19, 20)]);
+        ], &[Span::new(9, 10), Span::new(19, 20)], &[]);
     }
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -1869,21 +1882,21 @@ mod tests {
     fn block_comment_unterminated_1() {
         check(&[
             ScannerTestSlice("/* forgot", Token::Unrecognized),
-        ], &[Span::new(0, 9)], &[]);
+        ], &[], &[Span::new(0, 9)]);
     }
 
     #[test]
     fn block_comment_unterminated_2() {
         check(&[
             ScannerTestSlice("/*/", Token::Unrecognized),
-        ], &[Span::new(0, 3)], &[]);
+        ], &[], &[Span::new(0, 3)]);
     }
 
     #[test]
     fn block_comment_unterminated_nested() {
         check(&[
             ScannerTestSlice("/*/*nested*/", Token::Unrecognized),
-        ], &[Span::new(0, 12)], &[]);
+        ], &[], &[Span::new(0, 12)]);
     }
 
     #[test]
@@ -1942,10 +1955,10 @@ mod tests {
 
     #[test]
     fn doc_comment_block_unterminated() {
-        check(&[ScannerTestSlice("/** forgot ", Token::Unrecognized)], &[Span::new(0, 11)], &[]);
-        check(&[ScannerTestSlice("/*! as well", Token::Unrecognized)], &[Span::new(0, 11)], &[]);
-        check(&[ScannerTestSlice("/** /*nest",  Token::Unrecognized)], &[Span::new(0, 10)], &[]);
-        check(&[ScannerTestSlice("/*!/*!*/",    Token::Unrecognized)], &[Span::new(0,  8)], &[]);
+        check(&[ScannerTestSlice("/** forgot ", Token::Unrecognized)], &[], &[Span::new(0, 11)]);
+        check(&[ScannerTestSlice("/*! as well", Token::Unrecognized)], &[], &[Span::new(0, 11)]);
+        check(&[ScannerTestSlice("/** /*nest",  Token::Unrecognized)], &[], &[Span::new(0, 10)]);
+        check(&[ScannerTestSlice("/*!/*!*/",    Token::Unrecognized)], &[], &[Span::new(0,  8)]);
     }
 
     #[test]
@@ -2200,9 +2213,10 @@ mod tests {
             ScannerTestSlice("542_",                    Token::Integer),
             ScannerTestSlice("\\",                      Token::Unrecognized),
             ScannerTestSlice("x10",                     Token::Identifier),
-        ], &[ Span::new( 3, 11), Span::new(18, 19), Span::new(28, 31), Span::new(33, 36),
-              Span::new(40, 46), Span::new(54, 55), Span::new(63, 65), Span::new(71, 72),
-              Span::new(78, 86), Span::new(78, 92), Span::new(97, 98)
+        ], &[
+            Span::new( 3, 11), Span::new(18, 19), Span::new(28, 31), Span::new(33, 36),
+            Span::new(40, 46), Span::new(54, 55), Span::new(63, 65), Span::new(71, 72),
+            Span::new(78, 86), Span::new(78, 92), Span::new(97, 98)
         ], &[]);
     }
 
@@ -2384,9 +2398,10 @@ mod tests {
             ScannerTestSlice("5.0_",                    Token::Float),
             ScannerTestSlice("\\",                      Token::Unrecognized),
             ScannerTestSlice("e10",                     Token::Identifier),
-        ], &[ Span::new(  4,  12), Span::new( 19,  20), Span::new( 34,  34), Span::new( 36,  36),
-              Span::new( 44,  50), Span::new( 61,  62), Span::new( 62,  63), Span::new( 70,  72),
-              Span::new( 81,  82), Span::new( 89,  97), Span::new( 89, 103), Span::new(108, 109)
+        ], &[
+            Span::new(  4,  12), Span::new( 19,  20), Span::new( 34,  34), Span::new( 36,  36),
+            Span::new( 44,  50), Span::new( 61,  62), Span::new( 62,  63), Span::new( 70,  72),
+            Span::new( 81,  82), Span::new( 89,  97), Span::new( 89, 103), Span::new(108, 109)
         ], &[]);
     }
 
@@ -2551,26 +2566,29 @@ mod tests {
             ScannerTestSlice(".",                Token::Dot),
             ScannerTestSlice("'test\rline'",     Token::Character),
             ScannerTestSlice("'another\rtest",   Token::Unrecognized),
-        ], &[ Span::new( 0, 16), Span::new(20, 27), Span::new(29, 31), Span::new(39, 40),
-              Span::new(34, 45), Span::new(53, 54), Span::new(45, 58) ], &[]);
+        ], &[
+            Span::new(29, 31), Span::new(39, 40), Span::new(34, 45), Span::new(53, 54),
+        ], &[
+            Span::new( 0, 16), Span::new(20, 27), Span::new(45, 58),
+        ]);
     }
 
     #[test]
     fn character_premature_termination() {
-        check(&[ ScannerTestSlice("'",      Token::Unrecognized) ], &[ Span::new(0, 1) ], &[]);
-        check(&[ ScannerTestSlice("'a",     Token::Unrecognized) ], &[ Span::new(0, 2) ], &[]);
-        check(&[ ScannerTestSlice("'\\",    Token::Unrecognized) ], &[ Span::new(0, 2) ], &[]);
-        check(&[ ScannerTestSlice("'\t",    Token::Unrecognized) ], &[ Span::new(0, 2) ], &[]);
-        check(&[ ScannerTestSlice("'\\x",   Token::Unrecognized) ], &[ Span::new(3, 3),
-                                                                       Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("'\\y",   Token::Unrecognized) ], &[ Span::new(1, 3),
-                                                                       Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("'\\u",   Token::Unrecognized) ], &[ Span::new(3, 3),
-                                                                       Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("'\\u{",  Token::Unrecognized) ], &[ Span::new(3, 4),
-                                                                       Span::new(0, 4) ], &[]);
-        check(&[ ScannerTestSlice("'\\u{}", Token::Unrecognized) ], &[ Span::new(3, 5),
-                                                                       Span::new(0, 5) ], &[]);
+        check(&[ ScannerTestSlice("'",      Token::Unrecognized) ], &[], &[ Span::new(0, 1) ]);
+        check(&[ ScannerTestSlice("'a",     Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
+        check(&[ ScannerTestSlice("'\\",    Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
+        check(&[ ScannerTestSlice("'\t",    Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
+        check(&[ ScannerTestSlice("'\\x",   Token::Unrecognized) ], &[ Span::new(1, 3) ],
+                                                                    &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("'\\y",   Token::Unrecognized) ], &[ Span::new(1, 3) ],
+                                                                    &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("'\\u",   Token::Unrecognized) ], &[ Span::new(3, 3) ],
+                                                                    &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("'\\u{",  Token::Unrecognized) ], &[ Span::new(3, 4) ],
+                                                                    &[ Span::new(0, 4) ]);
+        check(&[ ScannerTestSlice("'\\u{}", Token::Unrecognized) ], &[ Span::new(3, 5) ],
+                                                                    &[ Span::new(0, 5) ]);
     }
 
     #[test]
@@ -2589,8 +2607,11 @@ mod tests {
             ScannerTestSlice("'",            Token::Unrecognized),
             ScannerTestSlice("\r\n",         Token::Whitespace),
             ScannerTestSlice("'",            Token::Unrecognized),
-        ], &[ Span::new( 1,  2), Span::new( 9, 10), Span::new( 4, 15), Span::new(16, 17),
-              Span::new(22, 23), Span::new(25, 26) ], &[]);
+        ], &[
+            Span::new( 1,  2), Span::new( 9, 10), Span::new( 4, 15),
+        ], &[
+            Span::new(16, 17), Span::new(22, 23), Span::new(25, 26)
+        ]);
     }
 
     #[test]
@@ -2603,7 +2624,7 @@ mod tests {
             ScannerTestSlice(r"'\x123'",   Token::Character),
             ScannerTestSlice(r" ",         Token::Whitespace),
             ScannerTestSlice(r"'\u{}'",    Token::Character),
-        ], &[ Span::new(3, 3), Span::new(8, 9), Span::new(14, 17), Span::new(22, 24) ], &[]);
+        ], &[ Span::new(1, 3), Span::new(6, 9), Span::new(12, 17), Span::new(22, 24) ], &[]);
     }
 
     // A similar heuristic is used for missing curly braces.
@@ -2631,10 +2652,13 @@ mod tests {
             ScannerTestSlice(r"'\u{123, missing",       Token::Unrecognized),
             ScannerTestSlice("\n",                      Token::Whitespace),
             ScannerTestSlice(r"'\u{more missing",       Token::Unrecognized),
-        ], &[ Span::new(  7,   7), Span::new(12,  13), Span::new(18, 24), Span::new( 34,  34),
-              Span::new( 29,  34), Span::new(39,  57), Span::new(79, 79), Span::new( 62,  79),
-              Span::new( 97,  97), Span::new(84,  97), Span::new(81, 97), Span::new(114, 114),
-              Span::new(101, 114), Span::new(98, 114) ], &[]);
+        ], &[
+            Span::new(  7,   7), Span::new( 12,  13), Span::new( 16,  24), Span::new( 34,  34),
+            Span::new( 27,  34), Span::new( 37,  57), Span::new( 79,  79), Span::new( 60,  79),
+            Span::new( 97,  97), Span::new( 82,  97), Span::new(114, 114), Span::new( 99, 114),
+        ], &[
+            Span::new( 81,  97), Span::new( 98, 114),
+        ]);
     }
 
     #[test]
@@ -2710,11 +2734,13 @@ mod tests {
             ScannerTestSlice("'b\\\t\\",    Token::Unrecognized),
             ScannerTestSlice("\n\t",          Token::Whitespace),
             ScannerTestSlice("'",           Token::Unrecognized),
-        ], &[ Span::new( 1,  3), Span::new( 6,  8), Span::new(11, 13), Span::new(16, 18),
-              Span::new(21, 23), Span::new(26, 28), Span::new(25, 30), Span::new(32, 34),
-              Span::new(37, 40), Span::new(43, 45), Span::new(42, 47), Span::new(48, 50),
-              Span::new(56, 61), Span::new(70, 72), Span::new(68, 73), Span::new(75, 76),
-        ], &[]);
+        ], &[
+            Span::new( 1,  3), Span::new( 6,  8), Span::new(11, 13), Span::new(16, 18),
+            Span::new(21, 23), Span::new(26, 28), Span::new(25, 30), Span::new(32, 34),
+            Span::new(37, 40), Span::new(43, 45), Span::new(42, 47), Span::new(70, 72),
+        ], &[
+            Span::new(48, 50), Span::new(56, 61), Span::new(68, 73), Span::new(75, 76),
+        ]);
     }
 
     #[test]
@@ -2763,8 +2789,9 @@ mod tests {
             ScannerTestSlice("'f'",                     Token::Character),
             ScannerTestSlice("\\",                      Token::Unrecognized),
             ScannerTestSlice("x",                       Token::Identifier),
-        ], &[ Span::new(17, 25), Span::new(39, 41), Span::new(37, 41), Span::new(48, 49),
-              Span::new(51, 52), Span::new(46, 52), Span::new(63, 71), Span::new(75, 76),
+        ], &[
+            Span::new(17, 25), Span::new(39, 41), Span::new(37, 41), Span::new(48, 49),
+            Span::new(51, 52), Span::new(46, 52), Span::new(63, 71), Span::new(75, 76),
         ], &[]);
     }
 
@@ -2793,10 +2820,13 @@ mod tests {
             ScannerTestSlice("'bar",                    Token::Unrecognized),
             ScannerTestSlice("\r\n",                    Token::Whitespace),
             ScannerTestSlice("'baz",                    Token::Unrecognized),
-        ], &[ Span::new(  1,  9), Span::new( 14, 16), Span::new( 18, 20), Span::new( 24, 25),
-              Span::new( 29, 30), Span::new( 27, 30), Span::new( 32, 34), Span::new( 38, 39),
-              Span::new( 44, 50), Span::new( 57, 61), Span::new( 66, 70), Span::new( 72, 76),
-        ], &[]);
+        ], &[
+            Span::new(  1,  9), Span::new( 14, 16), Span::new( 18, 20), Span::new( 24, 25),
+            Span::new( 29, 30), Span::new( 27, 30), Span::new( 32, 34), Span::new( 38, 39),
+            Span::new( 44, 50),
+        ], &[
+            Span::new( 57, 61), Span::new( 66, 70), Span::new( 72, 76),
+        ]);
     }
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -2881,20 +2911,20 @@ mod tests {
 
     #[test]
     fn string_premature_termination() {
-        check(&[ ScannerTestSlice("\"",      Token::Unrecognized) ], &[ Span::new(0, 1) ], &[]);
-        check(&[ ScannerTestSlice("\"a",     Token::Unrecognized) ], &[ Span::new(0, 2) ], &[]);
-        check(&[ ScannerTestSlice("\"\\",    Token::Unrecognized) ], &[ Span::new(0, 2) ], &[]);
-        check(&[ ScannerTestSlice("\"\t",    Token::Unrecognized) ], &[ Span::new(0, 2) ], &[]);
-        check(&[ ScannerTestSlice("\"\\x",   Token::Unrecognized) ], &[ Span::new(3, 3),
-                                                                        Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("\"\\y",   Token::Unrecognized) ], &[ Span::new(1, 3),
-                                                                        Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("\"\\u",   Token::Unrecognized) ], &[ Span::new(3, 3),
-                                                                        Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("\"\\u{",  Token::Unrecognized) ], &[ Span::new(3, 4),
-                                                                        Span::new(0, 4) ], &[]);
-        check(&[ ScannerTestSlice("\"\\u{}", Token::Unrecognized) ], &[ Span::new(3, 5),
-                                                                        Span::new(0, 5) ], &[]);
+        check(&[ ScannerTestSlice("\"",      Token::Unrecognized) ], &[], &[ Span::new(0, 1) ]);
+        check(&[ ScannerTestSlice("\"a",     Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
+        check(&[ ScannerTestSlice("\"\\",    Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
+        check(&[ ScannerTestSlice("\"\t",    Token::Unrecognized) ], &[], &[ Span::new(0, 2) ]);
+        check(&[ ScannerTestSlice("\"\\x",   Token::Unrecognized) ], &[ Span::new(1, 3) ],
+                                                                     &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("\"\\y",   Token::Unrecognized) ], &[ Span::new(1, 3) ],
+                                                                     &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("\"\\u",   Token::Unrecognized) ], &[ Span::new(3, 3) ],
+                                                                     &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("\"\\u{",  Token::Unrecognized) ], &[ Span::new(3, 4) ],
+                                                                     &[ Span::new(0, 4) ]);
+        check(&[ ScannerTestSlice("\"\\u{}", Token::Unrecognized) ], &[ Span::new(3, 5) ],
+                                                                     &[ Span::new(0, 5) ]);
     }
 
     #[test]
@@ -2907,7 +2937,7 @@ mod tests {
             ScannerTestSlice(r#""\x123""#, Token::String),
             ScannerTestSlice(r#" "#,       Token::Whitespace),
             ScannerTestSlice(r#""\u{}""#,  Token::String),
-        ], &[ Span::new(3, 3), Span::new(8, 9), Span::new(14, 17), Span::new(22, 24) ], &[]);
+        ], &[ Span::new(1, 3), Span::new(6, 9), Span::new(12, 17), Span::new(22, 24) ], &[]);
     }
 
     #[test]
@@ -2938,13 +2968,16 @@ mod tests {
             ScannerTestSlice("\"\\u{or this\\f\"",                          Token::String),
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
             ScannerTestSlice(r#""\u{check missing"#,                        Token::Unrecognized),
-        ], &[ Span::new(  7,   7), Span::new( 12,  13), Span::new( 18,  24), Span::new( 34,  34),
-              Span::new( 29,  34), Span::new( 39,  57), Span::new( 79,  79), Span::new( 62,  79),
-              Span::new( 97,  97), Span::new( 84,  97), Span::new(137, 137), Span::new(124, 137),
-              Span::new(158, 184), Span::new(199, 199), Span::new(189, 199), Span::new(222, 222),
-              Span::new(212, 222), Span::new(242, 242), Span::new(234, 242), Span::new(242, 244),
-              Span::new(263, 263), Span::new(249, 263), Span::new(246, 263),
-        ], &[]);
+        ], &[
+            Span::new(  7,   7), Span::new( 12,  13), Span::new( 16,  24), Span::new( 34,  34),
+            Span::new( 27,  34), Span::new( 37,  57), Span::new( 79,  79), Span::new( 60,  79),
+            Span::new( 97,  97), Span::new( 82,  97), Span::new(137, 137), Span::new(122, 137),
+            Span::new(156, 184), Span::new(199, 199), Span::new(187, 199), Span::new(222, 222),
+            Span::new(210, 222), Span::new(242, 242), Span::new(232, 242), Span::new(242, 244),
+            Span::new(263, 263), Span::new(247, 263),
+        ], &[
+            Span::new(246, 263),
+        ]);
     }
 
     #[test]
@@ -3030,8 +3063,9 @@ mod tests {
             ScannerTestSlice("\"foo\"",                 Token::String),
             ScannerTestSlice("\\",                      Token::Unrecognized),
             ScannerTestSlice("U900",                    Token::Identifier),
-        ], &[ Span::new(13, 21), Span::new(26, 28), Span::new(24, 28), Span::new(36, 38),
-              Span::new(34, 38), Span::new(48, 56), Span::new(57, 65), Span::new(71, 72),
+        ], &[
+            Span::new(13, 21), Span::new(26, 28), Span::new(24, 28), Span::new(36, 38),
+            Span::new(34, 38), Span::new(48, 56), Span::new(57, 65), Span::new(71, 72),
         ], &[]);
     }
 
@@ -3050,7 +3084,7 @@ mod tests {
             ScannerTestSlice("\"\\x4500\"__",           Token::String),
             // We aren't able to test missing quotes as they are detected only at EOF
         ], &[ Span::new( 3,  4), Span::new( 8,  9), Span::new( 6,  9), Span::new(11, 13),
-              Span::new(17, 18), Span::new(26, 26), Span::new(34, 38),
+              Span::new(17, 18), Span::new(24, 26), Span::new(32, 38),
         ], &[]);
     }
 
@@ -3143,22 +3177,30 @@ mod tests {
 
     #[test]
     fn raw_string_premature_termination() {
-        check(&[ScannerTestSlice("r\"",               Token::Unrecognized)],
-              &[ Span::new(0, 2) ], &[]);
-        check(&[ScannerTestSlice("r\"some text",      Token::Unrecognized)],
-              &[ Span::new(0, 11) ], &[]);
-        check(&[ScannerTestSlice("r\"line\n",         Token::Unrecognized)],
-              &[ Span::new(0, 7) ], &[]);
-        check(&[ScannerTestSlice("r\"windows\r\n",    Token::Unrecognized)],
-              &[ Span::new(0, 11) ], &[]);
-        check(&[ScannerTestSlice("r\"bare CR\r",      Token::Unrecognized)],
-              &[ Span::new(9, 10), Span::new(0, 10) ], &[]);
-        check(&[ScannerTestSlice("r#\"text\"",        Token::Unrecognized)],
-              &[ Span::new(0, 8) ], &[]);
-        check(&[ScannerTestSlice("r###\"te\"#xt\"##", Token::Unrecognized)],
-              &[ Span::new(0, 14) ], &[]);
-        check(&[ScannerTestSlice("r#\"r\"\"",         Token::Unrecognized)],
-              &[ Span::new(0, 6) ], &[]);
+        check(&[
+            ScannerTestSlice("r\"",               Token::Unrecognized)
+        ], &[], &[ Span::new(0, 2) ]);
+        check(&[
+            ScannerTestSlice("r\"some text",      Token::Unrecognized)
+        ], &[], &[ Span::new(0, 11) ]);
+        check(&[
+            ScannerTestSlice("r\"line\n",         Token::Unrecognized)
+        ], &[], &[ Span::new(0, 7) ]);
+        check(&[
+            ScannerTestSlice("r\"windows\r\n",    Token::Unrecognized)
+        ], &[], &[ Span::new(0, 11) ]);
+        check(&[
+            ScannerTestSlice("r\"bare CR\r",      Token::Unrecognized)
+        ], &[ Span::new(9, 10) ], &[ Span::new(0, 10) ]);
+        check(&[
+            ScannerTestSlice("r#\"text\"",        Token::Unrecognized)
+        ], &[], &[ Span::new(0, 8) ]);
+        check(&[
+            ScannerTestSlice("r###\"te\"#xt\"##", Token::Unrecognized)
+        ], &[], &[ Span::new(0, 14) ]);
+        check(&[
+            ScannerTestSlice("r#\"r\"\"",         Token::Unrecognized)
+        ], &[], &[ Span::new(0, 6) ]);
     }
 
     #[test]
@@ -3249,8 +3291,9 @@ mod tests {
             ScannerTestSlice("#",                           Token::Hash),
             ScannerTestSlice("\"4\"",                       Token::String),
             ScannerTestSlice("#",                           Token::Hash),
-        ], &[ Span::new(14, 22), Span::new(31, 33), Span::new(29, 33), Span::new(41, 43),
-              Span::new(39, 43), Span::new(67, 75), Span::new(82, 83), Span::new(93, 99),
+        ], &[
+            Span::new(14, 22), Span::new(31, 33), Span::new(29, 33), Span::new(41, 43),
+            Span::new(39, 43), Span::new(67, 75), Span::new(82, 83), Span::new(93, 99),
         ], &[]);
     }
 
@@ -3748,14 +3791,15 @@ mod tests {
             ScannerTestSlice("\n",                                          Token::Whitespace),
             // And unexpected EOFs can happen with identifiers too, thought they are not fatal
             ScannerTestSlice(r"\u{914",                                     Token::Identifier),
-        ], &[ Span::new(  2,   6), Span::new(  8,  12), Span::new( 14,  18), Span::new( 20,  24),
-              Span::new( 27,  31), Span::new( 36,  40), Span::new( 51,  51), Span::new( 58,  58),
-              Span::new( 65,  65), Span::new( 73,  77), Span::new( 87,  91), Span::new( 99,  99),
-              Span::new(101, 101), Span::new(108, 112), Span::new(119, 119), Span::new(121, 125),
-              Span::new(128, 128), Span::new(126, 128), Span::new(132, 132), Span::new(130, 132),
-              Span::new(136, 138), Span::new(134, 138), Span::new(143, 143), Span::new(141, 143),
-              Span::new(148, 148), Span::new(146, 148), Span::new(152, 152), Span::new(150, 152),
-              Span::new(158, 158), Span::new(156, 158), Span::new(189, 189), Span::new(196, 196),
+        ], &[
+            Span::new(  2,   6), Span::new(  8,  12), Span::new( 14,  18), Span::new( 20,  24),
+            Span::new( 27,  31), Span::new( 36,  40), Span::new( 51,  51), Span::new( 58,  58),
+            Span::new( 65,  65), Span::new( 73,  77), Span::new( 87,  91), Span::new( 99,  99),
+            Span::new(101, 101), Span::new(108, 112), Span::new(119, 119), Span::new(121, 125),
+            Span::new(128, 128), Span::new(126, 128), Span::new(132, 132), Span::new(130, 132),
+            Span::new(136, 138), Span::new(134, 138), Span::new(143, 143), Span::new(141, 143),
+            Span::new(148, 148), Span::new(146, 148), Span::new(152, 152), Span::new(150, 152),
+            Span::new(158, 158), Span::new(156, 158), Span::new(189, 189), Span::new(196, 196),
         ], &[]);
     }
 
@@ -3790,12 +3834,13 @@ mod tests {
             ScannerTestSlice(r" ",                                          Token::Whitespace),
             ScannerTestSlice(r"\u{Some}\u{Invalid}\u{Stuff}",               Token::Unrecognized),
             ScannerTestSlice(r"_123",                                       Token::Identifier),
-        ], &[ Span::new(  4,   6), Span::new( 11,  19), Span::new( 21,  35), Span::new( 41,  65),
-              Span::new( 68,  76), Span::new( 76,  84), Span::new( 68,  84), Span::new( 86,  94),
-              Span::new( 95, 103), Span::new(103, 111), Span::new(120, 137), Span::new(120, 137),
-              Span::new(141, 152), Span::new(161, 167), Span::new(169, 178), Span::new(180, 187),
-              Span::new(159, 187), Span::new(193, 199), Span::new(201, 210), Span::new(212, 219),
-              Span::new(191, 219),
+        ], &[
+            Span::new(  4,   6), Span::new( 11,  19), Span::new( 21,  35), Span::new( 39,  65),
+            Span::new( 68,  76), Span::new( 76,  84), Span::new( 68,  84), Span::new( 86,  94),
+            Span::new( 95, 103), Span::new(103, 111), Span::new(120, 137), Span::new(120, 137),
+            Span::new(139, 152), Span::new(159, 167), Span::new(167, 178), Span::new(178, 187),
+            Span::new(159, 187), Span::new(191, 199), Span::new(199, 210), Span::new(210, 219),
+            Span::new(191, 219),
          ], &[]);
     }
 
@@ -3846,12 +3891,13 @@ mod tests {
             ScannerTestSlice("C\u{20DD}_\u{20E3}",                          Token::Identifier),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("+\u{200D}+=\u{200D}",                         Token::Identifier),
-        ], &[ Span::new(  0,   7), Span::new(  8,  12), Span::new( 13,  21), Span::new( 22,  28),
-              Span::new( 29,  43), Span::new( 44,  61), Span::new( 62,  63), Span::new( 67,  69),
-              Span::new( 74,  75), Span::new( 76,  89), Span::new( 90,  97), Span::new(104, 105),
-              Span::new(107, 110), Span::new(111, 112), Span::new(116, 117), Span::new(118, 119),
-              Span::new(126, 127), Span::new(132, 134), Span::new(138, 140), Span::new(143, 146),
-              Span::new(147, 150), Span::new(152, 155), Span::new(157, 160),
+        ], &[
+            Span::new(  0,   7), Span::new(  8,  12), Span::new( 13,  21), Span::new( 22,  28),
+            Span::new( 29,  43), Span::new( 44,  61), Span::new( 62,  63), Span::new( 67,  69),
+            Span::new( 74,  75), Span::new( 76,  89), Span::new( 90,  97), Span::new(104, 105),
+            Span::new(107, 110), Span::new(111, 112), Span::new(116, 117), Span::new(118, 119),
+            Span::new(126, 127), Span::new(132, 134), Span::new(138, 140), Span::new(143, 146),
+            Span::new(147, 150), Span::new(152, 155), Span::new(157, 160),
         ], &[]);
     }
 
@@ -3880,7 +3926,7 @@ mod tests {
         ], &[ Span::new(  1,   9), Span::new( 11,  19), Span::new( 20,  26), Span::new( 30,  36),
               Span::new( 37,  38), Span::new( 45,  46), Span::new( 51,  59), Span::new( 63,  71),
               Span::new( 74,  82), Span::new( 83,  91), Span::new( 93, 101), Span::new(103, 111),
-              Span::new(115, 117), Span::new(122, 145), Span::new(149, 153), Span::new(147, 153),
+              Span::new(115, 117), Span::new(120, 145), Span::new(149, 153), Span::new(147, 153),
               Span::new(155, 159), Span::new(153, 159), Span::new(160, 180),
         ], &[]);
     }
@@ -3903,8 +3949,9 @@ mod tests {
             ScannerTestSlice(r"test\u{0020}test",                           Token::Identifier),
             ScannerTestSlice(r" ",                                          Token::Whitespace),
             ScannerTestSlice(r"a\u{2B}b",                                   Token::Identifier),
-        ], &[ Span::new( 1,  7), Span::new(16, 22), Span::new(26, 44), Span::new(45, 51),
-              Span::new(52, 58), Span::new(60, 66), Span::new(72, 80), Span::new(86, 92),
+        ], &[
+            Span::new( 1,  7), Span::new(16, 22), Span::new(26, 44), Span::new(45, 51),
+            Span::new(52, 58), Span::new(60, 66), Span::new(72, 80), Span::new(86, 92),
         ], &[]);
     }
 
@@ -4083,7 +4130,7 @@ mod tests {
             ScannerTestSlice("C\u{20DD}_\u{20E3}:",                         Token::ImplicitSymbol),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("test\\u{003A}:",                              Token::ImplicitSymbol),
-        ], &[ Span::new(  1,   9), Span::new( 13,  15), Span::new( 25,  31), Span::new( 39,  62),
+        ], &[ Span::new(  1,   9), Span::new( 13,  15), Span::new( 25,  31), Span::new( 37,  62),
               Span::new( 68,  72), Span::new( 74,  80), Span::new( 72,  80), Span::new( 83,  86),
               Span::new( 87,  90), Span::new( 96, 104),
         ], &[]);
@@ -4129,11 +4176,11 @@ mod tests {
             ScannerTestSlice(r"`\a\b\f\v\?\'`",                             Token::ExplicitSymbol),
             ScannerTestSlice(r" ",                                          Token::Whitespace),
             ScannerTestSlice(r"`\x\x1\x1234`",                              Token::ExplicitSymbol),
-        ], &[ Span::new( 7,  7), Span::new( 9,  9), Span::new(15, 27), Span::new(32, 32),
+        ], &[ Span::new( 7,  7), Span::new( 9,  9), Span::new(13, 27), Span::new(32, 32),
               Span::new(37, 41), Span::new(35, 41), Span::new(43, 59), Span::new(41, 59),
               Span::new(61, 61), Span::new(64, 66), Span::new(66, 68), Span::new(68, 70),
-              Span::new(70, 72), Span::new(72, 74), Span::new(74, 76), Span::new(81, 81),
-              Span::new(83, 84), Span::new(86, 90),
+              Span::new(70, 72), Span::new(72, 74), Span::new(74, 76), Span::new(79, 81),
+              Span::new(81, 84), Span::new(84, 90),
         ], &[]);
     }
 
@@ -4157,22 +4204,25 @@ mod tests {
             ScannerTestSlice("\n\t",                                        Token::Whitespace),
             ScannerTestSlice("test",                                        Token::Identifier),
             ScannerTestSlice("`",                                           Token::Unrecognized),
-        ], &[ Span::new( 0,  8), Span::new( 9, 19), Span::new(25, 26), Span::new(32, 33),
-              Span::new(34, 35), Span::new(38, 39), Span::new(41, 43), Span::new(49, 50),
-        ], &[]);
+        ], &[
+            Span::new(25, 26), Span::new(38, 39),
+        ], &[
+            Span::new( 0,  8), Span::new( 9, 19), Span::new(32, 33), Span::new(34, 35),
+            Span::new(41, 43), Span::new(49, 50),
+        ]);
     }
 
     #[test]
     fn symbol_explicit_premature_termination() {
         // Unexpected EOFs are handled similar to characters and strings
-        check(&[ ScannerTestSlice("`",      Token::Unrecognized) ], &[ Span::new(0, 1) ], &[]);
-        check(&[ ScannerTestSlice("`xyz",   Token::Unrecognized) ], &[ Span::new(0, 4) ], &[]);
-        check(&[ ScannerTestSlice("`\\x",   Token::Unrecognized) ], &[ Span::new(3, 3),
-                                                                       Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("`\\u",   Token::Unrecognized) ], &[ Span::new(3, 3),
-                                                                       Span::new(0, 3) ], &[]);
-        check(&[ ScannerTestSlice("`\\u{1", Token::Unrecognized) ], &[ Span::new(5, 5),
-                                                                       Span::new(0, 5) ], &[]);
+        check(&[ ScannerTestSlice("`",      Token::Unrecognized) ], &[], &[ Span::new(0, 1) ]);
+        check(&[ ScannerTestSlice("`xyz",   Token::Unrecognized) ], &[], &[ Span::new(0, 4) ]);
+        check(&[ ScannerTestSlice("`\\x",   Token::Unrecognized) ], &[ Span::new(1, 3) ],
+                                                                    &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("`\\u",   Token::Unrecognized) ], &[ Span::new(3, 3) ],
+                                                                    &[ Span::new(0, 3) ]);
+        check(&[ ScannerTestSlice("`\\u{1", Token::Unrecognized) ], &[ Span::new(5, 5) ],
+                                                                    &[ Span::new(0, 5) ]);
     }
 
     #[test]
@@ -4209,59 +4259,57 @@ mod tests {
     // Test helpers
 
     use std::cell::RefCell;
+    use std::rc::Rc;
 
     struct ScannerTestSlice<'a>(&'a str, Token);
 
     struct SinkReporter {
-        pub errors: RefCell<Vec<Span>>,
-        pub warnings: RefCell<Vec<Span>>,
+        pub diagnostics: Rc<RefCell<Vec<(Severity, Span)>>>,
     }
 
-    impl SpanReporter for SinkReporter {
-        fn error(&self, span: Span, _: &str) {
-            self.errors.borrow_mut().push(span);
-        }
+    impl diagnostics::Reporter for SinkReporter {
+        fn report(&mut self, severity: Severity, _: &str, loc: Option<Span>) {
+            let mut diagnostics = self.diagnostics.borrow_mut();
 
-        fn warning(&self, span: Span, _: &str) {
-            self.warnings.borrow_mut().push(span);
+            // Scanner diagnostics always come with a location.
+            diagnostics.push((severity, loc.unwrap()));
         }
     }
 
     impl SinkReporter {
-        fn new() -> SinkReporter {
+        fn new(diagnostics: Rc<RefCell<Vec<(Severity, Span)>>>) -> SinkReporter {
             SinkReporter {
-                errors: RefCell::new(Vec::new()),
-                warnings: RefCell::new(Vec::new()),
+                diagnostics: diagnostics,
             }
         }
     }
 
     /// Checks whether a sequence of test string slices yields consistent results and generates
     /// expected diagnostics.
-    fn check(slices: &[ScannerTestSlice], expected_errors: &[Span], expected_warnings: &[Span]) {
+    fn check(slices: &[ScannerTestSlice], expected_errors: &[Span], expected_fatals: &[Span]) {
         let (test_string, expected_tokens) = expand_test_slices(slices);
 
-        let (actual_tokens, actual_errors, actual_warnings) = process_test_string(&test_string);
+        let (actual_tokens, actual_fatals, actual_errors) = process_test_string(&test_string);
 
         let token_failures =
             verify("Tokens", &test_string, &expected_tokens, &actual_tokens, token_as_str);
 
+        let fatal_failures =
+            verify("Fatal errors", &test_string, expected_fatals, &actual_fatals, span_as_str);
+
         let error_failures =
             verify("Errors", &test_string, expected_errors, &actual_errors, span_as_str);
-
-        let warning_failures =
-            verify("Warnings", &test_string, expected_warnings, &actual_warnings, span_as_str);
 
         if let Some(first_failure) = token_failures {
             panic!("first invalid token: #{}", first_failure);
         }
 
-        if let Some(first_failure) = error_failures {
-            panic!("first invalid error: #{}", first_failure);
+        if let Some(first_failure) = fatal_failures {
+            panic!("first invalid fatal: #{}", first_failure);
         }
 
-        if let Some(first_failure) = warning_failures {
-            panic!("first invalid warning: #{}", first_failure);
+        if let Some(first_failure) = error_failures {
+            panic!("first invalid error: #{}", first_failure);
         }
     }
 
@@ -4290,9 +4338,11 @@ mod tests {
     /// and a number of diagnostics which were emitted during scanning.
     fn process_test_string(whole_string: &str) -> (Vec<ScannedToken>, Vec<Span>, Vec<Span>) {
         let mut tokens = Vec::new();
-        let diagnostics = SinkReporter::new();
+        let diagnostics = Rc::new(RefCell::new(Vec::new()));
+        let reporter = SinkReporter::new(diagnostics.clone());
+        let handler = SpanReporter::with_reporter(Box::new(reporter));
 
-        let mut scanner = StringScanner::new(whole_string, &diagnostics);
+        let mut scanner = StringScanner::new(whole_string, &handler);
 
         // Loop with postcondition to catch the EOF token
         loop {
@@ -4307,10 +4357,24 @@ mod tests {
 
         assert!(scanner.at_eof());
 
-        let errors = diagnostics.errors.borrow().clone();
-        let warnings = diagnostics.warnings.borrow().clone();
+        let (fatals, errors) = partition_diagnostics(&diagnostics.borrow()[..]);
 
-        return (tokens, errors, warnings);
+        return (tokens, fatals, errors);
+    }
+
+    /// Partitions diagnostics by severity.
+    fn partition_diagnostics(diags: &[(Severity, Span)]) -> (Vec<Span>, Vec<Span>) {
+        let mut fatals = Vec::new();
+        let mut errors = Vec::new();
+
+        for &(severity, span) in diags {
+            match severity {
+                Severity::Fatal => fatals.push(span),
+                Severity::Error => errors.push(span),
+            }
+        }
+
+        return (fatals, errors);
     }
 
     /// Prints out and verifies produced results. Returns Some 1-based index of the first incorrect
