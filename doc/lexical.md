@@ -3,16 +3,15 @@ Lexical syntax
 
 ## 1 – Input format
 
-Sash operates on source code represented with Unicode text encoded in UTF-8
-format. Alphabetic case is significant. Indentation and line-breaking are
-free-form.
+Sash operates on source code represented with Unicode text encoded in UTF-8.
+Alphabetic case is significant. Indentation and line-breaking are free-form.
 
 
 ## 2 – Whitespace
 
-Sash recognizes space (U+0020), tab (U+0009), newline (U+000A), and return
-(U+000D) characters as whitespace. Newline (LF) and return-newline (CRLF)
-sequences are recognized as line endings.
+Sash recognizes tabulation (U+0009), newline (U+000A), carriage return (U+000D),
+and space (U+0020) characters as whitespace. Both UNIX (LF) and Windows (CRLF)
+line endings are recognized as such.
 
 Whitespace is not semantically significant, but affects syntactical meaning
 by denoting token boundaries.
@@ -42,21 +41,30 @@ they still do not affect the semantics of programs in any way.
 
 Examples of documentation comments:
 
-    /// Line documentation comment applied to the entity
-    /// which follows it in the source code.
-
-    //! Line documentation comment applied to the entity
-    //! which encloses it in the source code.
+    /// Does foo.
+    ///
+    /// These are line documentation comments
 
     /**
-     *  Block documentation comment applied to the entity
-     *  which follows it in the source code.
+     *  And these are block documentation comments.
+     *
+     *  /* They can also contain nested blocks */
      */
 
+Previous documentation comments are applied to the program entity that follows
+them. This is the preferred form of documentation comments.
+
+However, there is also a different form:
+
+    //! Line documentation comment which is applied
+    //! to the program entity that encloses it.
+
     /*!
-     *  Block documentation comment applied to the entity
-     *  which encloses it in the source code.
+     *  And a block documentation comment of the same form.
      */
+
+These are mostly useful for documenting modules which usually do not have
+explicit starting tokens and implicitly span over the whole source file.
 
 
 ## 4 – Identifiers
@@ -71,9 +79,9 @@ operators; and quotes are intended for some outfix (enclosing) operators. All
 identifier kinds are composed of nonitersecting sets of characters so that
 they could be told apart even when whitespace is omitted, as in `a+b`.
 
-Unicode is supported in all identifier kinds, but has its peculiarities.
-Unicode can be freely mixed with ASCII. There is also an ASCII compatibility
-form for the cases when full Unicode range is not available.
+Unicode is supported in all identifier kinds, it can be freely mixed with ASCII.
+There is also an ASCII compatibility form for cases when full Unicode range
+is not available.
 
 
 ### 4.1 – Words
@@ -95,26 +103,26 @@ Unicode words are supported in a manner similar to the one described in
 Specifically, a word starts with a character that has one of the following
 Unicode _general categories_:
 
-  - **Lu** — uppercase letters
-  - **Ll** — lowercase letters
-  - **Lt** — titlecase letters
-  - **Lm** — modifier letters
-  - **Lo** — other letters
-  - **Nl** — letter numbers
+- **Lu** — uppercase letters
+- **Ll** — lowercase letters
+- **Lt** — titlecase letters
+- **Lm** — modifier letters
+- **Lo** — other letters
+- **Nl** — letter numbers
 
 After the first character the following additional general categories are
 allowed to be used:
 
-  - **Mn** — nonspacing marks
-  - **Mc** — spacing combining marks
-  - **Nd** — decimal numbers
-  - **Pc** — connector punctuation
+- **Mn** — nonspacing marks
+- **Mc** — spacing combining marks
+- **Nd** — decimal numbers
+- **Pc** — connector punctuation
 
 As an extension, Sash also allows the following two format control characters
 to be used in word continuations (after the first character):
 
-  - U+200C ZERO-WIDTH NON-JOINER
-  - U+200D ZERO-WIDTH JOINER
+- U+200C ZERO-WIDTH NON-JOINER
+- U+200D ZERO-WIDTH JOINER
 
 Finally, due to Unicode stability requirements, starter characters include
 several extra ones with Unicode property **Other_ID_Start**, and continuation
@@ -122,7 +130,7 @@ characters include the ones with the property **Other_ID_Continue**.
 
 Examples of Unicode words:
 
-    TODO
+    пример        按键        יקספּאַנד       améliorer        كتاب
 
 
 ### 4.2 – Marks
@@ -142,24 +150,24 @@ Examples of marks:
 
 Unicode marks are composed of characters of the following general categories:
 
-  - **Pd** — dash punctuation
-  - **Po** — other punctuation
-  - **Sc** — currency symbols
-  - **Sm** — mathematical symbols
-  - **So** — other symbols
+- **Pd** — dash punctuation
+- **Po** — other punctuation
+- **Sc** — currency symbols
+- **Sm** — mathematical symbols
+- **So** — other symbols
 
 After the first character marks can also contain the following modifiers:
 
-  - **Mc** — spacing combining modifiers
-  - **Mn** — non-spacing combining modifiers
-  - **Me** — enclosing modifiers
+- **Mc** — spacing combining modifiers
+- **Mn** — non-spacing combining modifiers
+- **Me** — enclosing modifiers
 
 Marks are also affected by Unicode stability requirements, but the exceptional
 characters sets for them are currently empty (as of Unicode 8.0.0).
 
 Examples of Unicode marks:
 
-    TODO
+    ∈     ≪⫗≫     ∭       ⌽       ╠╤╝       ☺⚝➹       !¶!       ※
 
 
 ### 4.3 – Quotes
@@ -175,16 +183,16 @@ their own reserved meanings.
 
 Unicode quotes are formed by the following character general categories:
 
-  - **Ps** — opening punctuation
-  - **Pe** — closing punctuation
-  - **Pi** — initial quotes
-  - **Pf** — final quotes
+- **Ps** — opening punctuation
+- **Pe** — closing punctuation
+- **Pi** — initial quotes
+- **Pf** — final quotes
 
 Unicode quotes do not allow any combining modifiers after them.
 
 Examples of Unicode quotes:
 
-    TODO
+    ❰ ❱       『 』       « »      “ ”      ⸠ ⸡
 
 
 ### 4.4 – Unicode in identifiers
@@ -196,9 +204,9 @@ repertoire of Sash stated here is complete and exhaustive.
 Also, Unicode support usually has several important implications for programming
 languages, namely:
 
-  - how identifiers are compared for equality
-  - what happens when Unicode Stardard gets updated
-  - is Unicode support required to use the language
+- how identifiers are compared for equality
+- what happens when Unicode Stardard gets updated
+- is Unicode support required to use the language
 
 
 #### 4.4.1 – Identifier normalization
@@ -242,25 +250,25 @@ characters — and ℮ is considered a valid word character.
 
 Here is a full list of current grandfathered sets for Sash identifiers:
 
-  - **words:**
-    - additional starter characters:
-      - U+2118 SCRIPT CAPITAL P (℘)
-      - U+212E ESTIMATED SYMBOL (℮)
-    - additional continuations (includes all starters):
-      - U+00B7 MIDDLE DOT (·)
-      - U+0387 GREEK ANO TELEIA (·)
-      - U+1369 ETHIOPIC DIGIT ONE (፩)
-      - U+136A ETHIOPIC DIGIT TWO (፪)
-      - U+136B ETHIOPIC DIGIT THREE (፫)
-      - U+136C ETHIOPIC DIGIT FOUR (፬)
-      - U+136D ETHIOPIC DIGIT FIVE (፭)
-      - U+136E ETHIOPIC DIGIT SIX (፮)
-      - U+136F ETHIOPIC DIGIT SEVEN (፯)
-      - U+1370 ETHIOPIC DIGIT EIGHT (፰)
-      - U+1371 ETHIOPIC DIGIT NINE (፱)
-      - U+19DA NEW TAI LUE THAM DIGIT ONE (᧚)
-  - **marks:** none
-  - **quotes:** none
+- **words:**
+  - additional starter characters:
+    - U+2118 SCRIPT CAPITAL P (℘)
+    - U+212E ESTIMATED SYMBOL (℮)
+  - additional continuations (includes all starters):
+    - U+00B7 MIDDLE DOT (·)
+    - U+0387 GREEK ANO TELEIA (·)
+    - U+1369 ETHIOPIC DIGIT ONE (፩)
+    - U+136A ETHIOPIC DIGIT TWO (፪)
+    - U+136B ETHIOPIC DIGIT THREE (፫)
+    - U+136C ETHIOPIC DIGIT FOUR (፬)
+    - U+136D ETHIOPIC DIGIT FIVE (፭)
+    - U+136E ETHIOPIC DIGIT SIX (፮)
+    - U+136F ETHIOPIC DIGIT SEVEN (፯)
+    - U+1370 ETHIOPIC DIGIT EIGHT (፰)
+    - U+1371 ETHIOPIC DIGIT NINE (፱)
+    - U+19DA NEW TAI LUE THAM DIGIT ONE (᧚)
+- **marks:** none
+- **quotes:** none
 
 We also need to ensure that no identifier is a valid substring of an identifier
 of different kind. General categories of starter characters of identifier kinds
@@ -303,22 +311,24 @@ TODO
 
 ### 4.6 – Reserved identifiers
 
-TODO
+> **TODO**: the list
+>
+> Currently I have no idea which ones will be reserved.
 
 
 ## 5 – Delimiters
 
 Sash defines several delimiter tokens with special meaning:
 
-  - `(`, `)` — positional collections, expression groups, function calls
-  - `[`, `]` — ordered collections, indexing, type parameters, attributes
-  - `{`, `}` — unordered collections, various code and declaration blocks
-  - `.` — field access, method calls
-  - `,` — subexpression separator
-  - `;` — expression separator
-  - `:` — type declarations
-  - `::` — namespace separator
-  - `#` — multipart identifiers, attributes
+- `(`, `)` — positional collections, expression groups, function calls
+- `[`, `]` — ordered collections, indexing, type parameters, attributes
+- `{`, `}` — unordered collections, various code and declaration blocks
+- `.` — field access, method calls
+- `,` — subexpression separator
+- `;` — expression separator
+- `:` — type declarations
+- `::` — namespace separator
+- `#` — multipart identifiers, attributes
 
 
 ## 6 – Literals
@@ -370,7 +380,9 @@ using decimal digits. No binary form is provided for floating-point numbers.
 Type suffixes (`i8`, `usize`, `f32`, etc.) can be used to specify precise type
 of a number literal.
 
-> **TODO:** elaborate precise list
+> **TODO**: the list
+>
+> Currently I have no idea which ones will be reserved.
 
 If a suffix is specified, the literal value must fit into the specified type.
 If no suffix is specified, a suitable type for literal is inferred from the
