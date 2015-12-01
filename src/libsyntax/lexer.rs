@@ -2066,7 +2066,7 @@ mod tests {
             ScannerTestSlice("00000", Token::Integer),
             ScannerTestSlice(",",     Token::Comma),
             ScannerTestSlice("00001", Token::Integer),
-            ScannerTestSlice(",",     Token::Comma),
+            ScannerTestSlice(".",     Token::Dot),
             ScannerTestSlice(" ",     Token::Whitespace),
             ScannerTestSlice("42",    Token::Integer),
             ScannerTestSlice(" ",     Token::Whitespace),
@@ -2727,6 +2727,8 @@ mod tests {
             ScannerTestSlice("\n",          Token::Whitespace),
             ScannerTestSlice("' '",         Token::Character),
             ScannerTestSlice("  ",          Token::Whitespace),
+            ScannerTestSlice("'\\\r'",      Token::Character),
+            ScannerTestSlice("  ",          Token::Whitespace),
             ScannerTestSlice("'foo\\",      Token::Unrecognized),
             ScannerTestSlice("\r\n",        Token::Whitespace),
             ScannerTestSlice("' '",         Token::Character),
@@ -2737,9 +2739,10 @@ mod tests {
         ], &[
             Span::new( 1,  3), Span::new( 6,  8), Span::new(11, 13), Span::new(16, 18),
             Span::new(21, 23), Span::new(26, 28), Span::new(25, 30), Span::new(32, 34),
-            Span::new(37, 40), Span::new(43, 45), Span::new(42, 47), Span::new(70, 72),
+            Span::new(37, 40), Span::new(43, 45), Span::new(42, 47), Span::new(58, 59),
+            Span::new(57, 59), Span::new(76, 78),
         ], &[
-            Span::new(48, 50), Span::new(56, 61), Span::new(68, 73), Span::new(75, 76),
+            Span::new(48, 50), Span::new(62, 67), Span::new(74, 79), Span::new(81, 82),
         ]);
     }
 
@@ -3949,9 +3952,14 @@ mod tests {
             ScannerTestSlice(r"test\u{0020}test",                           Token::Identifier),
             ScannerTestSlice(r" ",                                          Token::Whitespace),
             ScannerTestSlice(r"a\u{2B}b",                                   Token::Identifier),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"*\u{3E}*",                                   Token::Identifier),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice("\u{2045}\\u{60}",                             Token::Identifier),
         ], &[
-            Span::new( 1,  7), Span::new(16, 22), Span::new(26, 44), Span::new(45, 51),
-            Span::new(52, 58), Span::new(60, 66), Span::new(72, 80), Span::new(86, 92),
+            Span::new(  1,   7), Span::new( 16,  22), Span::new( 26,  44), Span::new( 45,  51),
+            Span::new( 52,  58), Span::new( 60,  66), Span::new( 72,  80), Span::new( 86,  92),
+            Span::new( 95, 101), Span::new(106, 112),
         ], &[]);
     }
 
@@ -4202,13 +4210,17 @@ mod tests {
             ScannerTestSlice("\n",                                          Token::Whitespace),
             ScannerTestSlice("`\\",                                         Token::Unrecognized),
             ScannerTestSlice("\n\t",                                        Token::Whitespace),
+            ScannerTestSlice("`\\",                                         Token::Unrecognized),
+            ScannerTestSlice("\r\n",                                        Token::Whitespace),
+            ScannerTestSlice("`\\\r`",                                      Token::ExplicitSymbol),
+            ScannerTestSlice("\t",                                          Token::Whitespace),
             ScannerTestSlice("test",                                        Token::Identifier),
             ScannerTestSlice("`",                                           Token::Unrecognized),
         ], &[
-            Span::new(25, 26), Span::new(38, 39),
+            Span::new(25, 26), Span::new(38, 39), Span::new(51, 52), Span::new(50, 52),
         ], &[
             Span::new( 0,  8), Span::new( 9, 19), Span::new(32, 33), Span::new(34, 35),
-            Span::new(41, 43), Span::new(49, 50),
+            Span::new(41, 43), Span::new(45, 47), Span::new(58, 59),
         ]);
     }
 
