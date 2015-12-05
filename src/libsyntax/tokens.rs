@@ -8,6 +8,8 @@
 //!
 //! This module contains definitions of various tokens recognized and processed by Sash parser.
 
+use intern_pool::Atom;
+
 /// Types of tokens recognized by the scanner.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Token {
@@ -21,7 +23,7 @@ pub enum Token {
     Comment,
 
     /// Documentation comment.
-    DocComment,
+    DocComment(Atom),
 
     /// An opening (left) delimiter.
     OpenDelim(Delimiter),
@@ -48,16 +50,16 @@ pub enum Token {
     Hash,
 
     /// A literal value.
-    Literal(Lit),
+    Literal(Lit, Option<Atom>),
 
     /// An identifier (of any kind).
-    Identifier,
+    Identifier(Atom),
 
     /// An implicit symbol.
-    ImplicitSymbol,
+    ImplicitSymbol(Atom),
 
     /// An explicit symbol.
-    ExplicitSymbol,
+    ExplicitSymbol(Atom),
 
     /// Marker token denoting invalid character sequences.
     Unrecognized,
@@ -80,17 +82,17 @@ pub enum Delimiter {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Lit {
     /// An integer literal.
-    Integer,
+    Integer(Atom),
 
     /// A floating-point literal.
-    Float,
+    Float(Atom),
 
     /// A single character.
-    Character,
+    Character(Atom),
 
     /// A string of characters.
-    String,
+    String(Atom),
 
     /// A raw string of characters.
-    RawString,
+    RawString(Atom),
 }
