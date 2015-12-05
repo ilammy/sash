@@ -23,23 +23,11 @@ pub enum Token {
     /// Documentation comment.
     DocComment,
 
-    /// Left (opening) parenthesis `(`.
-    Lparen,
+    /// An opening (left) delimiter.
+    OpenDelim(Delimiter),
 
-    /// Right (closing) parenthesis `)`.
-    Rparen,
-
-    /// Left (opening) bracket `[`.
-    Lbrack,
-
-    /// Right (closing) bracket `]`.
-    Rbrack,
-
-    /// Left (opening) brace `{`.
-    Lbrace,
-
-    /// Right (closing) brace `}`.
-    Rbrace,
+    /// A closing (right) delimiter.
+    CloseDelim(Delimiter),
 
     /// Dot `.`.
     Dot,
@@ -59,6 +47,38 @@ pub enum Token {
     /// Hash `#`.
     Hash,
 
+    /// A literal value.
+    Literal(Lit),
+
+    /// An identifier (of any kind).
+    Identifier,
+
+    /// An implicit symbol.
+    ImplicitSymbol,
+
+    /// An explicit symbol.
+    ExplicitSymbol,
+
+    /// Marker token denoting invalid character sequences.
+    Unrecognized,
+}
+
+/// Delimiter type.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Delimiter {
+    /// Parentheses `( )`.
+    Paren,
+
+    /// Brackets `[ ]`.
+    Bracket,
+
+    /// Braces `{ }`.
+    Brace,
+}
+
+/// Literal token type.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Lit {
     /// An integer literal.
     Integer,
 
@@ -73,16 +93,4 @@ pub enum Token {
 
     /// A raw string of characters.
     RawString,
-
-    /// An identifier (of any kind).
-    Identifier,
-
-    /// An implicit symbol.
-    ImplicitSymbol,
-
-    /// An explicit symbol.
-    ExplicitSymbol,
-
-    /// Marker token denoting invalid character sequences.
-    Unrecognized,
 }

@@ -11,7 +11,7 @@
 
 use std::char;
 
-use tokens::{Token};
+use tokens::{Token, Delimiter, Lit};
 use diagnostics::{Span, SpanReporter};
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -201,12 +201,12 @@ impl<'a> StringScanner<'a> {
             '/' if self.peek_is('*') => {
                 self.scan_block_comment()
             }
-            '(' => { self.read(); Token::Lparen }
-            ')' => { self.read(); Token::Rparen }
-            '[' => { self.read(); Token::Lbrack }
-            ']' => { self.read(); Token::Rbrack }
-            '{' => { self.read(); Token::Lbrace }
-            '}' => { self.read(); Token::Rbrace }
+            '(' => { self.read(); Token::OpenDelim(Delimiter::Paren) }
+            '[' => { self.read(); Token::OpenDelim(Delimiter::Bracket) }
+            '{' => { self.read(); Token::OpenDelim(Delimiter::Brace) }
+            ')' => { self.read(); Token::CloseDelim(Delimiter::Paren) }
+            ']' => { self.read(); Token::CloseDelim(Delimiter::Bracket) }
+            '}' => { self.read(); Token::CloseDelim(Delimiter::Brace) }
             ',' => { self.read(); Token::Comma }
             ';' => { self.read(); Token::Semicolon }
             '#' => { self.read(); Token::Hash }
@@ -399,7 +399,7 @@ impl<'a> StringScanner<'a> {
                 // Else it is just an integer followed by some dot. While dots can form identifiers
                 // (like '...'), type suffixes are defined as word-identifiers, which dots aren't.
                 // Thus we just go out with the suffixless integer we have already scanned over.
-                return Token::Integer;
+                return Token::Literal(Lit::Integer);
             }
         }
 
@@ -439,7 +439,7 @@ impl<'a> StringScanner<'a> {
                 "only decimal base is supported for floating-point numbers");
         }
 
-        return if integer { Token::Integer } else { Token::Float };
+        return Token::Literal(if integer { Lit::Integer } else { Lit::Float });
     }
 
     /// Scan over a sequence of digits.
@@ -578,7 +578,7 @@ impl<'a> StringScanner<'a> {
 
         self.scan_optional_type_suffix();
 
-        return Token::Character;
+        return Token::Literal(Lit::Character);
     }
 
     /// Scan over a string literal.
@@ -614,7 +614,7 @@ impl<'a> StringScanner<'a> {
 
         self.scan_optional_type_suffix();
 
-        return Token::String;
+        return Token::Literal(Lit::String);
     }
 
     /// Scan over an explicit symbol.
@@ -1315,7 +1315,7 @@ impl<'a> StringScanner<'a> {
 
         self.scan_optional_type_suffix();
 
-        return Token::RawString;
+        return Token::Literal(Lit::RawString);
     }
 
     /// Scan over raw string trailing sequence `"#...#`.
@@ -1775,7 +1775,7 @@ fn hex_value(c: char) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokens::{Token};
+    use tokens::{Token, Delimiter, Lit};
     use diagnostics;
     use diagnostics::{Span, SpanReporter, Severity};
 
@@ -2031,20 +2031,20 @@ mod tests {
     #[test]
     fn brackets() {
         check(&[
-            ScannerTestSlice("(",    Token::Lparen),
-            ScannerTestSlice("]",    Token::Rbrack),
+            ScannerTestSlice("(",    Token::OpenDelim(Delimiter::Paren)),
+            ScannerTestSlice("]",    Token::CloseDelim(Delimiter::Bracket)),
             ScannerTestSlice("\n\n", Token::Whitespace),
-            ScannerTestSlice("}",    Token::Rbrace),
-            ScannerTestSlice("}",    Token::Rbrace),
+            ScannerTestSlice("}",    Token::CloseDelim(Delimiter::Brace)),
+            ScannerTestSlice("}",    Token::CloseDelim(Delimiter::Brace)),
             ScannerTestSlice(" ",    Token::Whitespace),
-            ScannerTestSlice("[",    Token::Lbrack),
-            ScannerTestSlice("[",    Token::Lbrack),
+            ScannerTestSlice("[",    Token::OpenDelim(Delimiter::Bracket)),
+            ScannerTestSlice("[",    Token::OpenDelim(Delimiter::Bracket)),
             ScannerTestSlice("\t",   Token::Whitespace),
-            ScannerTestSlice("(",    Token::Lparen),
-            ScannerTestSlice("{",    Token::Lbrace),
+            ScannerTestSlice("(",    Token::OpenDelim(Delimiter::Paren)),
+            ScannerTestSlice("{",    Token::OpenDelim(Delimiter::Brace)),
             ScannerTestSlice("\r\n", Token::Whitespace),
-            ScannerTestSlice(")",    Token::Rparen),
-            ScannerTestSlice(")",    Token::Rparen),
+            ScannerTestSlice(")",    Token::CloseDelim(Delimiter::Paren)),
+            ScannerTestSlice(")",    Token::CloseDelim(Delimiter::Paren)),
         ], &[], &[]);
     }
 
@@ -2060,7 +2060,7 @@ mod tests {
             ScannerTestSlice(":",  Token::Colon),
             ScannerTestSlice(".",  Token::Dot),
             ScannerTestSlice(";",  Token::Semicolon),
-            ScannerTestSlice("(",  Token::Lparen),
+            ScannerTestSlice("(",  Token::OpenDelim(Delimiter::Paren)),
             ScannerTestSlice(";",  Token::Semicolon),
             ScannerTestSlice(";",  Token::Semicolon),
             ScannerTestSlice(",",  Token::Comma),
@@ -2076,73 +2076,74 @@ mod tests {
     #[test]
     fn integer_basic_decimal() {
         check(&[
-            ScannerTestSlice("0",     Token::Integer),
+            ScannerTestSlice("0",     Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",     Token::Comma),
-            ScannerTestSlice("1",     Token::Integer),
+            ScannerTestSlice("1",     Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",     Token::Comma),
-            ScannerTestSlice("00000", Token::Integer),
+            ScannerTestSlice("00000", Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",     Token::Comma),
-            ScannerTestSlice("00001", Token::Integer),
+            ScannerTestSlice("00001", Token::Literal(Lit::Integer)),
             ScannerTestSlice(".",     Token::Dot),
             ScannerTestSlice(" ",     Token::Whitespace),
-            ScannerTestSlice("42",    Token::Integer),
+            ScannerTestSlice("42",    Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",     Token::Whitespace),
-            ScannerTestSlice("9137847823642354637463430", Token::Integer),
+            ScannerTestSlice("9137847823642354637463430", Token::Literal(Lit::Integer)),
             ScannerTestSlice("\n",    Token::Whitespace),
-            ScannerTestSlice("(",     Token::Lparen),
-            ScannerTestSlice("12345", Token::Integer),
-            ScannerTestSlice(")",     Token::Rparen),
-            ScannerTestSlice("67890", Token::Integer),
+            ScannerTestSlice("(",     Token::OpenDelim(Delimiter::Paren)),
+            ScannerTestSlice("12345", Token::Literal(Lit::Integer)),
+            ScannerTestSlice(")",     Token::CloseDelim(Delimiter::Paren)),
+            ScannerTestSlice("67890", Token::Literal(Lit::Integer)),
         ], &[], &[]);
     }
 
     #[test]
     fn integer_basic_nondecimal() {
         check(&[
-            ScannerTestSlice("0b0110101010",    Token::Integer),
+            ScannerTestSlice("0b0110101010",    Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",               Token::Comma),
-            ScannerTestSlice("0o755",           Token::Integer),
+            ScannerTestSlice("0o755",           Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",               Token::Comma),
-            ScannerTestSlice("0o32",            Token::Integer),
+            ScannerTestSlice("0o32",            Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",               Token::Comma),
-            ScannerTestSlice("0o0",             Token::Integer),
+            ScannerTestSlice("0o0",             Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",               Token::Comma),
-            ScannerTestSlice("0xDBE",           Token::Integer),
+            ScannerTestSlice("0xDBE",           Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",               Token::Comma),
-            ScannerTestSlice("0x12345",         Token::Integer),
+            ScannerTestSlice("0x12345",         Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",               Token::Comma),
-            ScannerTestSlice("0xDeadBeef",      Token::Integer),
+            ScannerTestSlice("0xDeadBeef",      Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",               Token::Comma),
-            ScannerTestSlice("0xAAAAAAAAAAAAA", Token::Integer),
+            ScannerTestSlice("0xAAAAAAAAAAAAA", Token::Literal(Lit::Integer)),
         ], &[], &[]);
     }
 
     #[test]
     fn integer_separators() {
         check(&[
-            ScannerTestSlice("0___",       Token::Integer),
+            ScannerTestSlice("0___",       Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",          Token::Whitespace),
-            ScannerTestSlice("10_000",     Token::Integer),
+            ScannerTestSlice("10_000",     Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",          Token::Whitespace),
-            ScannerTestSlice("1_2_3_4_5",  Token::Integer),
+            ScannerTestSlice("1_2_3_4_5",  Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",          Token::Whitespace),
-            ScannerTestSlice("0x__5__",    Token::Integer),
+            ScannerTestSlice("0x__5__",    Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",          Token::Whitespace),
-            ScannerTestSlice("0b_0_1_1_0", Token::Integer),
+            ScannerTestSlice("0b_0_1_1_0", Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",          Token::Whitespace),
-            ScannerTestSlice("0o_7_7_7_",  Token::Integer),
+            ScannerTestSlice("0o_7_7_7_",  Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",          Token::Whitespace),
-            ScannerTestSlice("0________0", Token::Integer),
+            ScannerTestSlice("0________0", Token::Literal(Lit::Integer)),
         ], &[], &[]);
     }
 
     #[test]
     fn integer_unexpected_digit_range() {
         check(&[
-            ScannerTestSlice("0b12345", Token::Integer),
+            ScannerTestSlice("0b12345", Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",       Token::Comma),
-            ScannerTestSlice("0o48_19", Token::Integer),
-            // There are no unexpected characters in decimal or hexadecimal literals.            // The first nondigit is either the start of a type suffix, or the first
+            ScannerTestSlice("0o48_19", Token::Literal(Lit::Integer)),
+            // There are no unexpected characters in decimal or hexadecimal literals.
+            // The first nondigit is either the start of a type suffix, or the first
             // character of the next token.
         ], &[ Span::new(3, 4), Span::new(4, 5), Span::new(5, 6), Span::new(6, 7),
               Span::new(11, 12), Span::new(14, 15)], &[]);
@@ -2151,17 +2152,17 @@ mod tests {
     #[test]
     fn integer_unexpected_nondecimal_termination() {
         check(&[
-            ScannerTestSlice("0x",  Token::Integer),
+            ScannerTestSlice("0x",  Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",   Token::Comma),
-            ScannerTestSlice("0b",  Token::Integer),
+            ScannerTestSlice("0b",  Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",   Token::Comma),
-            ScannerTestSlice("0o",  Token::Integer),
+            ScannerTestSlice("0o",  Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",   Token::Comma),
-            ScannerTestSlice("0x_", Token::Integer),
+            ScannerTestSlice("0x_", Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",   Token::Comma),
-            ScannerTestSlice("0b_", Token::Integer),
+            ScannerTestSlice("0b_", Token::Literal(Lit::Integer)),
             ScannerTestSlice(",",   Token::Comma),
-            ScannerTestSlice("0o_", Token::Integer),
+            ScannerTestSlice("0o_", Token::Literal(Lit::Integer)),
         ], &[ Span::new(0, 2), Span::new(3, 5), Span::new(6, 8), Span::new(9, 12),
               Span::new(13, 16), Span::new(17, 20) ], &[]);
     }
@@ -2172,29 +2173,29 @@ mod tests {
     fn integer_type_suffixes() {
         check(&[
             // ASCII suffixes
-            ScannerTestSlice("1foo",                    Token::Integer),
+            ScannerTestSlice("1foo",                    Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("42i32",                   Token::Integer),
+            ScannerTestSlice("42i32",                   Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",                       Token::Whitespace),
             // Only words can be suffixes
-            ScannerTestSlice("42",                      Token::Integer),
+            ScannerTestSlice("42",                      Token::Literal(Lit::Integer)),
             ScannerTestSlice("+",                       Token::Identifier),
             ScannerTestSlice("i32",                     Token::Identifier),
             ScannerTestSlice(" ",                       Token::Whitespace),
             // Leading zero is not special
-            ScannerTestSlice("0yFFF",                   Token::Integer),
+            ScannerTestSlice("0yFFF",                   Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("0xBREAD",                 Token::Integer),
+            ScannerTestSlice("0xBREAD",                 Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("0_o133",                  Token::Integer),
+            ScannerTestSlice("0_o133",                  Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",                       Token::Whitespace),
             // Unicode suffixes
-            ScannerTestSlice("983\u{7206}\u{767A}",     Token::Integer),
+            ScannerTestSlice("983\u{7206}\u{767A}",     Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("983\\u{7206}\\u{767A}",   Token::Integer),
+            ScannerTestSlice("983\\u{7206}\\u{767A}",   Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",                       Token::Whitespace),
             // This is binary literal, not zero with suffix
-            ScannerTestSlice("0b234",                   Token::Integer),
+            ScannerTestSlice("0b234",                   Token::Literal(Lit::Integer)),
         ], &[ Span::new(71, 72), Span::new(72, 73), Span::new(73, 74) ], &[]);
     }
 
@@ -2204,30 +2205,30 @@ mod tests {
             // Inner invalid characters are treated as constituents of suffixes,
             // just as in regular identifiers. Note that underscores are treated
             // as a part of the number.
-            ScannerTestSlice("45f\\u{D800}9",           Token::Integer),
+            ScannerTestSlice("45f\\u{D800}9",           Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("951_x\u{0}__",            Token::Integer),
+            ScannerTestSlice("951_x\u{0}__",            Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("0000\\u430\\u443",        Token::Integer),
+            ScannerTestSlice("0000\\u430\\u443",        Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("9_x\\u{78}__",            Token::Integer),
+            ScannerTestSlice("9_x\\u{78}__",            Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("542_o\\x10",              Token::Integer),
+            ScannerTestSlice("542_o\\x10",              Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",                       Token::Whitespace),
             // However, if a literal is immediately followed by an invalid characters
             // they are not scanned over in anticipation of suffix. They are instantly
             // treated as Token::Unrecognized following the literal
-            ScannerTestSlice("0000",                    Token::Integer),
+            ScannerTestSlice("0000",                    Token::Literal(Lit::Integer)),
             ScannerTestSlice("\u{0}\u{0}",              Token::Unrecognized),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("951__",                   Token::Integer),
+            ScannerTestSlice("951__",                   Token::Literal(Lit::Integer)),
             ScannerTestSlice("\u{0}",                   Token::Unrecognized),
             ScannerTestSlice("__",                      Token::Identifier),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("9__",                     Token::Integer),
+            ScannerTestSlice("9__",                     Token::Literal(Lit::Integer)),
             ScannerTestSlice("\\u{DAAA}\\u{78}",        Token::Unrecognized),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("542_",                    Token::Integer),
+            ScannerTestSlice("542_",                    Token::Literal(Lit::Integer)),
             ScannerTestSlice("\\",                      Token::Unrecognized),
             ScannerTestSlice("x10",                     Token::Identifier),
         ], &[
@@ -2243,50 +2244,50 @@ mod tests {
     #[test]
     fn float_basic() {
         check(&[
-            ScannerTestSlice("0.0",             Token::Float),
+            ScannerTestSlice("0.0",             Token::Literal(Lit::Float)),
             ScannerTestSlice(" ",               Token::Whitespace),
-            ScannerTestSlice("1.0",             Token::Float),
+            ScannerTestSlice("1.0",             Token::Literal(Lit::Float)),
             ScannerTestSlice(" ",               Token::Whitespace),
-            ScannerTestSlice("12313.123123121", Token::Float),
+            ScannerTestSlice("12313.123123121", Token::Literal(Lit::Float)),
             ScannerTestSlice(" ",               Token::Whitespace),
-            ScannerTestSlice("0.0000000005",    Token::Float),
+            ScannerTestSlice("0.0000000005",    Token::Literal(Lit::Float)),
             ScannerTestSlice(" ",               Token::Whitespace),
-            ScannerTestSlice("0000000.1200000", Token::Float),
+            ScannerTestSlice("0000000.1200000", Token::Literal(Lit::Float)),
             ScannerTestSlice(" ",               Token::Whitespace),
-            ScannerTestSlice("56.43453",        Token::Float),
+            ScannerTestSlice("56.43453",        Token::Literal(Lit::Float)),
         ], &[], &[]);
     }
 
     #[test]
     fn float_exponential_without_dot() {
         check(&[
-            ScannerTestSlice("9e10",        Token::Float),
+            ScannerTestSlice("9e10",        Token::Literal(Lit::Float)),
             ScannerTestSlice(",",           Token::Comma),
-            ScannerTestSlice("1400e+12313", Token::Float),
+            ScannerTestSlice("1400e+12313", Token::Literal(Lit::Float)),
             ScannerTestSlice(",",           Token::Comma),
-            ScannerTestSlice("1400E-2323",  Token::Float),
+            ScannerTestSlice("1400E-2323",  Token::Literal(Lit::Float)),
             ScannerTestSlice("//",          Token::Comment),
             ScannerTestSlice("\n",          Token::Whitespace),
-            ScannerTestSlice("0e+0",        Token::Float),
+            ScannerTestSlice("0e+0",        Token::Literal(Lit::Float)),
             ScannerTestSlice(",",           Token::Comma),
-            ScannerTestSlice("0001E1000",   Token::Float),
+            ScannerTestSlice("0001E1000",   Token::Literal(Lit::Float)),
             ScannerTestSlice(",",           Token::Comma),
-            ScannerTestSlice("0e-0",        Token::Float),
+            ScannerTestSlice("0e-0",        Token::Literal(Lit::Float)),
         ], &[], &[]);
     }
 
     #[test]
     fn float_exponential_with_dot() {
         check(&[
-            ScannerTestSlice("2.0E10",           Token::Float),
-            ScannerTestSlice(")",                Token::Rparen),
-            ScannerTestSlice("0.00000e0",        Token::Float),
-            ScannerTestSlice("[",                Token::Lbrack),
-            ScannerTestSlice("123.456e+789",     Token::Float),
-            ScannerTestSlice("}",                Token::Rbrace),
-            ScannerTestSlice("11.11E-11",        Token::Float),
-            ScannerTestSlice("{",                Token::Lbrace),
-            ScannerTestSlice("9363.83929e00434", Token::Float),
+            ScannerTestSlice("2.0E10",           Token::Literal(Lit::Float)),
+            ScannerTestSlice(")",                Token::CloseDelim(Delimiter::Paren)),
+            ScannerTestSlice("0.00000e0",        Token::Literal(Lit::Float)),
+            ScannerTestSlice("[",                Token::OpenDelim(Delimiter::Bracket)),
+            ScannerTestSlice("123.456e+789",     Token::Literal(Lit::Float)),
+            ScannerTestSlice("}",                Token::CloseDelim(Delimiter::Brace)),
+            ScannerTestSlice("11.11E-11",        Token::Literal(Lit::Float)),
+            ScannerTestSlice("{",                Token::OpenDelim(Delimiter::Brace)),
+            ScannerTestSlice("9363.83929e00434", Token::Literal(Lit::Float)),
         ], &[], &[]);
     }
 
@@ -2294,53 +2295,53 @@ mod tests {
     fn float_extreme() {
         // Just making sure that scanner does not care about semantics
         check(&[
-            ScannerTestSlice("999999999999999999999999.999999999999999999", Token::Float),
+            ScannerTestSlice("999999999999999999999999.999999999999999999", Token::Literal(Lit::Float)),
             ScannerTestSlice("\r\n",                                        Token::Whitespace),
-            ScannerTestSlice("0.0000000000000000000e-99999999999999999999", Token::Float),
+            ScannerTestSlice("0.0000000000000000000e-99999999999999999999", Token::Literal(Lit::Float)),
             ScannerTestSlice("\r\n",                                        Token::Whitespace),
-            ScannerTestSlice("1.2345678901234567890E+12345678901234567890", Token::Float),
+            ScannerTestSlice("1.2345678901234567890E+12345678901234567890", Token::Literal(Lit::Float)),
             ScannerTestSlice("\r\n",                                        Token::Whitespace),
-            ScannerTestSlice("12345678.901234567890E123456789012345678901", Token::Float),
+            ScannerTestSlice("12345678.901234567890E123456789012345678901", Token::Literal(Lit::Float)),
         ], &[], &[]);
     }
 
     #[test]
     fn float_separators() {
         check(&[
-            ScannerTestSlice("10_000.000_001", Token::Float),
+            ScannerTestSlice("10_000.000_001", Token::Literal(Lit::Float)),
             ScannerTestSlice(",",              Token::Comma),
-            ScannerTestSlice("0______0.5",     Token::Float),
+            ScannerTestSlice("0______0.5",     Token::Literal(Lit::Float)),
             ScannerTestSlice(":",              Token::Colon),
-            ScannerTestSlice("1_._2",          Token::Float),
+            ScannerTestSlice("1_._2",          Token::Literal(Lit::Float)),
             ScannerTestSlice(",",              Token::Comma),
-            ScannerTestSlice("3._4_",          Token::Float),
+            ScannerTestSlice("3._4_",          Token::Literal(Lit::Float)),
             ScannerTestSlice(":",              Token::Colon),
-            ScannerTestSlice("7___e54",        Token::Float),
+            ScannerTestSlice("7___e54",        Token::Literal(Lit::Float)),
             ScannerTestSlice(",",              Token::Comma),
-            ScannerTestSlice("3_._1_E_4",      Token::Float),
+            ScannerTestSlice("3_._1_E_4",      Token::Literal(Lit::Float)),
             ScannerTestSlice(":",              Token::Colon),
-            ScannerTestSlice("0.0e+___4",      Token::Float),
+            ScannerTestSlice("0.0e+___4",      Token::Literal(Lit::Float)),
             ScannerTestSlice(",",              Token::Comma),
-            ScannerTestSlice("0._0E-__5__",    Token::Float),
+            ScannerTestSlice("0._0E-__5__",    Token::Literal(Lit::Float)),
         ], &[], &[]);
     }
 
     #[test]
     fn float_deny_radix_spec() {
         check(&[
-            ScannerTestSlice("0b1e101101",         Token::Float),
+            ScannerTestSlice("0b1e101101",         Token::Literal(Lit::Float)),
             ScannerTestSlice("          ",         Token::Whitespace),
-            ScannerTestSlice("0b01011011.0110101", Token::Float),
+            ScannerTestSlice("0b01011011.0110101", Token::Literal(Lit::Float)),
             ScannerTestSlice("/*      */",         Token::Comment),
-            ScannerTestSlice("0o7.7",              Token::Float),
+            ScannerTestSlice("0o7.7",              Token::Literal(Lit::Float)),
             ScannerTestSlice("          ",         Token::Whitespace),
-            ScannerTestSlice("0o77e10",            Token::Float),
+            ScannerTestSlice("0o77e10",            Token::Literal(Lit::Float)),
             ScannerTestSlice("          ",         Token::Whitespace),
-            ScannerTestSlice("0x00.0E7",           Token::Float),
+            ScannerTestSlice("0x00.0E7",           Token::Literal(Lit::Float)),
             ScannerTestSlice("          ",         Token::Whitespace),
-            ScannerTestSlice("0x5.1",              Token::Float),
+            ScannerTestSlice("0x5.1",              Token::Literal(Lit::Float)),
             ScannerTestSlice("          ",         Token::Whitespace),
-            ScannerTestSlice("0o5e+3",             Token::Float),
+            ScannerTestSlice("0o5e+3",             Token::Literal(Lit::Float)),
         ], &[ Span::new(0, 10), Span::new(20, 38), Span::new(48, 53), Span::new(63, 70),
               Span::new(80, 88), Span::new(98, 103), Span::new(113, 119) ], &[]);
     }
@@ -2348,15 +2349,15 @@ mod tests {
     #[test]
     fn float_missing_numbers() {
         check(&[
-            ScannerTestSlice("5._____",        Token::Float),
+            ScannerTestSlice("5._____",        Token::Literal(Lit::Float)),
             ScannerTestSlice(",",              Token::Comma),
-            ScannerTestSlice("0._",            Token::Float),
+            ScannerTestSlice("0._",            Token::Literal(Lit::Float)),
             ScannerTestSlice(",",              Token::Comma),
-            ScannerTestSlice("1e___",          Token::Float),
+            ScannerTestSlice("1e___",          Token::Literal(Lit::Float)),
             ScannerTestSlice(",",              Token::Comma),
-            ScannerTestSlice("5.0E+___",       Token::Float),
+            ScannerTestSlice("5.0E+___",       Token::Literal(Lit::Float)),
             ScannerTestSlice(",",              Token::Comma),
-            ScannerTestSlice("10e-___",        Token::Float),
+            ScannerTestSlice("10e-___",        Token::Literal(Lit::Float)),
         ], &[ Span::new(2, 7), Span::new(10, 11), Span::new(14, 17),
               Span::new(23, 26), Span::new(31, 34) ], &[]);
     }
@@ -2367,19 +2368,19 @@ mod tests {
     fn float_type_suffixes() {
         check(&[
             // ASCII suffixes
-            ScannerTestSlice("1.0zog",                      Token::Float),
+            ScannerTestSlice("1.0zog",                      Token::Literal(Lit::Float)),
             ScannerTestSlice(" ",                           Token::Whitespace),
-            ScannerTestSlice("0e+10f32",                    Token::Float),
+            ScannerTestSlice("0e+10f32",                    Token::Literal(Lit::Float)),
             ScannerTestSlice(" ",                           Token::Whitespace),
             // Only words can be suffixes
-            ScannerTestSlice("56e",                         Token::Integer),
+            ScannerTestSlice("56e",                         Token::Literal(Lit::Integer)),
             ScannerTestSlice("=",                           Token::Identifier),
             ScannerTestSlice("_f64",                        Token::Identifier),
             ScannerTestSlice(" ",                           Token::Whitespace),
             // Unicode suffixes
-            ScannerTestSlice("0.0_\u{7206}\u{767A}",        Token::Float),
+            ScannerTestSlice("0.0_\u{7206}\u{767A}",        Token::Literal(Lit::Float)),
             ScannerTestSlice(" ",                           Token::Whitespace),
-            ScannerTestSlice("9.6E-7_8\\u{7206}\\u{767A}",  Token::Float),
+            ScannerTestSlice("9.6E-7_8\\u{7206}\\u{767A}",  Token::Literal(Lit::Float)),
             ScannerTestSlice(" ",                           Token::Whitespace),
         ], &[], &[]);
     }
@@ -2390,30 +2391,30 @@ mod tests {
             // Inner invalid characters are treated as constituents of suffixes,
             // just as in regular identifiers. Note that underscores are treated
             // as a part of the number.
-            ScannerTestSlice("4.5f\\u{D800}9",          Token::Float),
+            ScannerTestSlice("4.5f\\u{D800}9",          Token::Literal(Lit::Float)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("9e0_x\u{0}__",            Token::Float),
+            ScannerTestSlice("9e0_x\u{0}__",            Token::Literal(Lit::Float)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("0.000\\u{430\\u443}",     Token::Float),
+            ScannerTestSlice("0.000\\u{430\\u443}",     Token::Literal(Lit::Float)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("9_e\\u{78}__",            Token::Integer),
+            ScannerTestSlice("9_e\\u{78}__",            Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("50_e+2_o\\\\10",          Token::Float),
+            ScannerTestSlice("50_e+2_o\\\\10",          Token::Literal(Lit::Float)),
             ScannerTestSlice(" ",                       Token::Whitespace),
             // However, if a literal is immediately followed by an invalid characters
             // they are not scanned over in anticipation of suffix. They are instantly
             // treated as Token::Unrecognized following the literal
-            ScannerTestSlice("00.0",                    Token::Float),
+            ScannerTestSlice("00.0",                    Token::Literal(Lit::Float)),
             ScannerTestSlice("\u{0}\u{1}",              Token::Unrecognized),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("9.1_e+5_",                Token::Float),
+            ScannerTestSlice("9.1_e+5_",                Token::Literal(Lit::Float)),
             ScannerTestSlice("\u{5}",                   Token::Unrecognized),
             ScannerTestSlice("__",                      Token::Identifier),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("9E1_",                    Token::Float),
+            ScannerTestSlice("9E1_",                    Token::Literal(Lit::Float)),
             ScannerTestSlice("\\u{DEAD}\\u{31}",        Token::Unrecognized),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("5.0_",                    Token::Float),
+            ScannerTestSlice("5.0_",                    Token::Literal(Lit::Float)),
             ScannerTestSlice("\\",                      Token::Unrecognized),
             ScannerTestSlice("e10",                     Token::Identifier),
         ], &[
@@ -2429,19 +2430,19 @@ mod tests {
     #[test]
     fn character_ascii() {
         check(&[
-            ScannerTestSlice("'a'",  Token::Character),
+            ScannerTestSlice("'a'",  Token::Literal(Lit::Character)),
             ScannerTestSlice("   ",  Token::Whitespace),
-            ScannerTestSlice("'b'",  Token::Character),
+            ScannerTestSlice("'b'",  Token::Literal(Lit::Character)),
             ScannerTestSlice("   ",  Token::Whitespace),
-            ScannerTestSlice("'0'",  Token::Character),
+            ScannerTestSlice("'0'",  Token::Literal(Lit::Character)),
             ScannerTestSlice("   ",  Token::Whitespace),
-            ScannerTestSlice("'''",  Token::Character),
+            ScannerTestSlice("'''",  Token::Literal(Lit::Character)),
             ScannerTestSlice("   ",  Token::Whitespace),
-            ScannerTestSlice("' '",  Token::Character),
+            ScannerTestSlice("' '",  Token::Literal(Lit::Character)),
             ScannerTestSlice("   ",  Token::Whitespace),
-            ScannerTestSlice("'''",  Token::Character),
-            ScannerTestSlice("'''",  Token::Character),
-            ScannerTestSlice("'\"'", Token::Character),
+            ScannerTestSlice("'''",  Token::Literal(Lit::Character)),
+            ScannerTestSlice("'''",  Token::Literal(Lit::Character)),
+            ScannerTestSlice("'\"'", Token::Literal(Lit::Character)),
         ], &[], &[]);
     }
 
@@ -2450,40 +2451,40 @@ mod tests {
         check(&[
             // Surrogates are not valid UTF-8 text and should have been reported before.
             // Rust does not even allow placing them into strings.
-            ScannerTestSlice("'\u{0123}'",   Token::Character),
+            ScannerTestSlice("'\u{0123}'",   Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",            Token::Whitespace),
-            ScannerTestSlice("'\u{07F7}'",   Token::Character),
+            ScannerTestSlice("'\u{07F7}'",   Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",            Token::Whitespace),
-            ScannerTestSlice("'\u{10ba}'",   Token::Character),
+            ScannerTestSlice("'\u{10ba}'",   Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",            Token::Whitespace),
-            ScannerTestSlice("'\u{B0e6}'",   Token::Character),
+            ScannerTestSlice("'\u{B0e6}'",   Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",            Token::Whitespace),
-            ScannerTestSlice("'\u{100300}'", Token::Character),
+            ScannerTestSlice("'\u{100300}'", Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",            Token::Whitespace),
-            ScannerTestSlice("'\u{0103CA}'", Token::Character),
+            ScannerTestSlice("'\u{0103CA}'", Token::Literal(Lit::Character)),
         ], &[], &[]);
     }
 
     #[test]
     fn character_control() {
         check(&[
-            ScannerTestSlice("'\0'",   Token::Character),  // Control characters can be used in
+            ScannerTestSlice("'\0'",   Token::Literal(Lit::Character)),  // Control characters can be used in
             ScannerTestSlice(" ",      Token::Whitespace), // character literals (technically).
-            ScannerTestSlice("'\t'",   Token::Character),  // They can be rendered weirdly by text
+            ScannerTestSlice("'\t'",   Token::Literal(Lit::Character)),  // They can be rendered weirdly by text
             ScannerTestSlice(" ",      Token::Whitespace), // editors, but we do not care much.
-            ScannerTestSlice("'\x04'", Token::Character),
+            ScannerTestSlice("'\x04'", Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",      Token::Whitespace),
-            ScannerTestSlice("'\x08'", Token::Character),
+            ScannerTestSlice("'\x08'", Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",      Token::Whitespace),
-            ScannerTestSlice("'\x0B'", Token::Character),
+            ScannerTestSlice("'\x0B'", Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",      Token::Whitespace),
-            ScannerTestSlice("'\x7F'", Token::Character),
+            ScannerTestSlice("'\x7F'", Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",      Token::Whitespace),
-            ScannerTestSlice("'\u{2028}'", Token::Character),
+            ScannerTestSlice("'\u{2028}'", Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",          Token::Whitespace),
-            ScannerTestSlice("'\u{2029}'", Token::Character),
+            ScannerTestSlice("'\u{2029}'", Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",          Token::Whitespace),
-            ScannerTestSlice("'\u{0086}'", Token::Character),
+            ScannerTestSlice("'\u{0086}'", Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",          Token::Whitespace),
         ], &[], &[]);
     }
@@ -2491,58 +2492,58 @@ mod tests {
     #[test]
     fn character_escape_sequences() {
         check(&[
-            ScannerTestSlice(r"'\0'",  Token::Character),
+            ScannerTestSlice(r"'\0'",  Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",      Token::Whitespace),
-            ScannerTestSlice(r"'\t'",  Token::Character),
+            ScannerTestSlice(r"'\t'",  Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",      Token::Whitespace),
-            ScannerTestSlice(r"'\r'",  Token::Character),
+            ScannerTestSlice(r"'\r'",  Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",      Token::Whitespace),
-            ScannerTestSlice(r"'\n'",  Token::Character),
+            ScannerTestSlice(r"'\n'",  Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",      Token::Whitespace),
-            ScannerTestSlice(r"'\'",   Token::Character), // backslash alone is okay
+            ScannerTestSlice(r"'\'",   Token::Literal(Lit::Character)), // backslash alone is okay
             ScannerTestSlice(" ",      Token::Whitespace),
-            ScannerTestSlice(r"'\\'",  Token::Character), // escaped is fine as well
+            ScannerTestSlice(r"'\\'",  Token::Literal(Lit::Character)), // escaped is fine as well
             ScannerTestSlice(" ",      Token::Whitespace),
-            ScannerTestSlice("'\\\"'", Token::Character), // escaped double-quote
+            ScannerTestSlice("'\\\"'", Token::Literal(Lit::Character)), // escaped double-quote
         ], &[], &[]);                                     // can be copy-pasted from strings
     }
 
     #[test]
     fn character_unicode_escapes() {
         check(&[
-            ScannerTestSlice(r"'\x00'",         Token::Character),
+            ScannerTestSlice(r"'\x00'",         Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\x35'",         Token::Character),
+            ScannerTestSlice(r"'\x35'",         Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\x1f'",         Token::Character),
+            ScannerTestSlice(r"'\x1f'",         Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\xFF'",         Token::Character),  // \x?? escapes are ASCII-only
+            ScannerTestSlice(r"'\xFF'",         Token::Literal(Lit::Character)),  // \x?? escapes are ASCII-only
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\u{12}'",       Token::Character),
+            ScannerTestSlice(r"'\u{12}'",       Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\u{d799}'",     Token::Character),
+            ScannerTestSlice(r"'\u{d799}'",     Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\u{D800}'",     Token::Character),  // Surrogates are not valid
+            ScannerTestSlice(r"'\u{D800}'",     Token::Literal(Lit::Character)),  // Surrogates are not valid
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\u{DEAD}'",     Token::Character),  // All of them
+            ScannerTestSlice(r"'\u{DEAD}'",     Token::Literal(Lit::Character)),  // All of them
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\u{DFfF}'",     Token::Character),  // are not valid
+            ScannerTestSlice(r"'\u{DFfF}'",     Token::Literal(Lit::Character)),  // are not valid
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\u{e000}'",     Token::Character),
+            ScannerTestSlice(r"'\u{e000}'",     Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\u{FFFE}'",     Token::Character),  // Non-characters are okay
+            ScannerTestSlice(r"'\u{FFFE}'",     Token::Literal(Lit::Character)),  // Non-characters are okay
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\u{fffff}'",    Token::Character),
+            ScannerTestSlice(r"'\u{fffff}'",    Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\u{F0123}'",    Token::Character),  // Private use area is okay
+            ScannerTestSlice(r"'\u{F0123}'",    Token::Literal(Lit::Character)),  // Private use area is okay
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\u{0}'",        Token::Character),
+            ScannerTestSlice(r"'\u{0}'",        Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\u{00000005}'", Token::Character),
+            ScannerTestSlice(r"'\u{00000005}'", Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",              Token::Whitespace),
-            ScannerTestSlice(r"'\u{99999999}'", Token::Character),  // Out of range are not okay
+            ScannerTestSlice(r"'\u{99999999}'", Token::Literal(Lit::Character)),  // Out of range are not okay
             ScannerTestSlice(r" ",              Token::Whitespace), // but they are still scanned
-            ScannerTestSlice(r"'\u{f0f0f0deadbeef00012345}'", Token::Character),
+            ScannerTestSlice(r"'\u{f0f0f0deadbeef00012345}'", Token::Literal(Lit::Character)),
         ], &[ Span::new( 22 , 26), Span::new( 49 , 57), Span::new(60, 68), Span::new(71, 79),
               Span::new(151, 163), Span::new(166, 192) ], &[]);
     }
@@ -2560,13 +2561,13 @@ mod tests {
     #[test]
     fn character_multicharacter_literals() {
         check(&[
-            ScannerTestSlice("'ab'",                Token::Character),
+            ScannerTestSlice("'ab'",                Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                   Token::Whitespace),
-            ScannerTestSlice("'\u{00E6}\u{0113}'",  Token::Character),
+            ScannerTestSlice("'\u{00E6}\u{0113}'",  Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                   Token::Whitespace),
-            ScannerTestSlice(r"'\x31\x32'",         Token::Character),
+            ScannerTestSlice(r"'\x31\x32'",         Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                   Token::Whitespace),
-            ScannerTestSlice(r"'\u{123}\u{4567}'",  Token::Character),
+            ScannerTestSlice(r"'\u{123}\u{4567}'",  Token::Literal(Lit::Character)),
         ], &[ Span::new(0, 4), Span::new(5, 11), Span::new(12, 22), Span::new(23, 40) ], &[]);
     }
 
@@ -2575,14 +2576,14 @@ mod tests {
         check(&[
             ScannerTestSlice("'ab some + thing", Token::Unrecognized),
             ScannerTestSlice("\n",               Token::Whitespace),
-            ScannerTestSlice("'''",              Token::Character),
+            ScannerTestSlice("'''",              Token::Literal(Lit::Character)),
             ScannerTestSlice("', more",          Token::Unrecognized),
             ScannerTestSlice("\r\n",             Token::Whitespace),
-            ScannerTestSlice("''",               Token::Character), // special case
+            ScannerTestSlice("''",               Token::Literal(Lit::Character)), // special case
             ScannerTestSlice(",",                Token::Comma),
             ScannerTestSlice(" ",                Token::Whitespace),
             ScannerTestSlice(".",                Token::Dot),
-            ScannerTestSlice("'test\rline'",     Token::Character),
+            ScannerTestSlice("'test\rline'",     Token::Literal(Lit::Character)),
             ScannerTestSlice("'another\rtest",   Token::Unrecognized),
         ], &[
             Span::new(29, 31), Span::new(39, 40), Span::new(34, 45), Span::new(53, 54),
@@ -2613,14 +2614,14 @@ mod tests {
     fn character_bare_crs_and_line_endings() {
         check(&[
             // Bare carrige returns are reported as misplaced restricted characters
-            ScannerTestSlice("'\r'",         Token::Character),
+            ScannerTestSlice("'\r'",         Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",            Token::Whitespace),
-            ScannerTestSlice("'Carr\riage'", Token::Character),
+            ScannerTestSlice("'Carr\riage'", Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",            Token::Whitespace),
             // But proper line endings are treated as markers of missing closing quotes
             ScannerTestSlice("'",            Token::Unrecognized),
             ScannerTestSlice("\n",           Token::Whitespace),
-            ScannerTestSlice("' '",          Token::Character),
+            ScannerTestSlice("' '",          Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",            Token::Whitespace),
             ScannerTestSlice("'",            Token::Unrecognized),
             ScannerTestSlice("\r\n",         Token::Whitespace),
@@ -2635,13 +2636,13 @@ mod tests {
     #[test]
     fn character_incorrect_unicode_escape_length() {
         check(&[
-            ScannerTestSlice(r"'\x'",      Token::Character),
+            ScannerTestSlice(r"'\x'",      Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",         Token::Whitespace),
-            ScannerTestSlice(r"'\x1'",     Token::Character),
+            ScannerTestSlice(r"'\x1'",     Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",         Token::Whitespace),
-            ScannerTestSlice(r"'\x123'",   Token::Character),
+            ScannerTestSlice(r"'\x123'",   Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",         Token::Whitespace),
-            ScannerTestSlice(r"'\u{}'",    Token::Character),
+            ScannerTestSlice(r"'\u{}'",    Token::Literal(Lit::Character)),
         ], &[ Span::new(1, 3), Span::new(6, 9), Span::new(12, 17), Span::new(22, 24) ], &[]);
     }
 
@@ -2655,17 +2656,17 @@ mod tests {
     #[test]
     fn character_incorrect_unicode_braces() {
         check(&[
-            ScannerTestSlice(r"'\u{123'",               Token::Character),
+            ScannerTestSlice(r"'\u{123'",               Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",                      Token::Whitespace),
-            ScannerTestSlice(r"'\u{'",                  Token::Character),
+            ScannerTestSlice(r"'\u{'",                  Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",                      Token::Whitespace),
-            ScannerTestSlice(r"'\u{uiui}'",             Token::Character),
+            ScannerTestSlice(r"'\u{uiui}'",             Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",                      Token::Whitespace),
-            ScannerTestSlice(r"'\u{uiui'",              Token::Character),
+            ScannerTestSlice(r"'\u{uiui'",              Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",                      Token::Whitespace),
-            ScannerTestSlice(r"'\u{some long string}'", Token::Character),
+            ScannerTestSlice(r"'\u{some long string}'", Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",                      Token::Whitespace),
-            ScannerTestSlice(r"'\u{some long string'",  Token::Character),
+            ScannerTestSlice(r"'\u{some long string'",  Token::Literal(Lit::Character)),
             ScannerTestSlice(r" ",                      Token::Whitespace),
             ScannerTestSlice(r"'\u{123, missing",       Token::Unrecognized),
             ScannerTestSlice("\n",                      Token::Whitespace),
@@ -2682,13 +2683,13 @@ mod tests {
     #[test]
     fn character_unicode_missing_digits() {
         check(&[
-            ScannerTestSlice(r"'\u'",       Token::Character),
+            ScannerTestSlice(r"'\u'",       Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",           Token::Whitespace),
-            ScannerTestSlice(r"'\u}'",      Token::Character),
+            ScannerTestSlice(r"'\u}'",      Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",           Token::Whitespace),
-            ScannerTestSlice(r"'\uguu~'",   Token::Character),
+            ScannerTestSlice(r"'\uguu~'",   Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",           Token::Whitespace),
-            ScannerTestSlice(r"'\ux\uy'",   Token::Character),
+            ScannerTestSlice(r"'\ux\uy'",   Token::Literal(Lit::Character)),
         ], &[ Span::new( 3,  3), Span::new( 8,  9), Span::new(14, 14), Span::new(11, 19),
               Span::new(23, 23), Span::new(26, 26), Span::new(20, 28),
         ], &[]);
@@ -2697,17 +2698,17 @@ mod tests {
     #[test]
     fn character_unicode_bare_digits() {
         check(&[
-            ScannerTestSlice(r"'\u0000'",       Token::Character),
+            ScannerTestSlice(r"'\u0000'",       Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",               Token::Whitespace),
-            ScannerTestSlice(r"'\u9'",          Token::Character),
+            ScannerTestSlice(r"'\u9'",          Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",               Token::Whitespace),
-            ScannerTestSlice(r"'\uDEAD'",       Token::Character),
+            ScannerTestSlice(r"'\uDEAD'",       Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",               Token::Whitespace),
-            ScannerTestSlice(r"'\u10F0F0'",     Token::Character),
+            ScannerTestSlice(r"'\u10F0F0'",     Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",               Token::Whitespace),
-            ScannerTestSlice(r"'\u9999999999'", Token::Character),
+            ScannerTestSlice(r"'\u9999999999'", Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",               Token::Whitespace),
-            ScannerTestSlice(r"'\u1\u2'",       Token::Character),
+            ScannerTestSlice(r"'\u1\u2'",       Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",               Token::Whitespace),
         ], &[ Span::new( 3,  7), Span::new(12, 13), Span::new(18, 22), Span::new(16, 22),
               Span::new(27, 33), Span::new(38, 48), Span::new(36, 48), Span::new(53, 54),
@@ -2719,37 +2720,37 @@ mod tests {
     fn character_unknown_escapes() {
         check(&[
             // Unsupported C escapes
-            ScannerTestSlice(r"'\a'",       Token::Character),
+            ScannerTestSlice(r"'\a'",       Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",           Token::Whitespace),
-            ScannerTestSlice(r"'\b'",       Token::Character),
+            ScannerTestSlice(r"'\b'",       Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",           Token::Whitespace),
-            ScannerTestSlice(r"'\f'",       Token::Character),
+            ScannerTestSlice(r"'\f'",       Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",           Token::Whitespace),
-            ScannerTestSlice(r"'\v'",       Token::Character),
+            ScannerTestSlice(r"'\v'",       Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",           Token::Whitespace),
-            ScannerTestSlice(r"'\?'",       Token::Character),
+            ScannerTestSlice(r"'\?'",       Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",           Token::Whitespace),
 
             // Unsupported hell-knows-whats
-            ScannerTestSlice(r"'\X9'",      Token::Character),
+            ScannerTestSlice(r"'\X9'",      Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",           Token::Whitespace),
-            ScannerTestSlice(r"'\@'",       Token::Character),
+            ScannerTestSlice(r"'\@'",       Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",           Token::Whitespace),
-            ScannerTestSlice("'\\\u{0430}'", Token::Character),
+            ScannerTestSlice("'\\\u{0430}'", Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",           Token::Whitespace),
-            ScannerTestSlice(r"'\m\'",      Token::Character),
+            ScannerTestSlice(r"'\m\'",      Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",           Token::Whitespace),
 
             // Attempts at line-continuation
             ScannerTestSlice("'\\",         Token::Unrecognized),
             ScannerTestSlice("\n",          Token::Whitespace),
-            ScannerTestSlice("' '",         Token::Character),
+            ScannerTestSlice("' '",         Token::Literal(Lit::Character)),
             ScannerTestSlice("  ",          Token::Whitespace),
-            ScannerTestSlice("'\\\r'",      Token::Character),
+            ScannerTestSlice("'\\\r'",      Token::Literal(Lit::Character)),
             ScannerTestSlice("  ",          Token::Whitespace),
             ScannerTestSlice("'foo\\",      Token::Unrecognized),
             ScannerTestSlice("\r\n",        Token::Whitespace),
-            ScannerTestSlice("' '",         Token::Character),
+            ScannerTestSlice("' '",         Token::Literal(Lit::Character)),
             ScannerTestSlice("  ",          Token::Whitespace),
             ScannerTestSlice("'b\\\t\\",    Token::Unrecognized),
             ScannerTestSlice("\n\t",          Token::Whitespace),
@@ -2768,23 +2769,23 @@ mod tests {
     fn character_type_suffixes() {
         check(&[
             // Suffixes are words
-            ScannerTestSlice("'x'wide",                 Token::Character),
+            ScannerTestSlice("'x'wide",                 Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("'\t'ASCII",               Token::Character),
+            ScannerTestSlice("'\t'ASCII",               Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("'\\t'ASCII",              Token::Character),
+            ScannerTestSlice("'\\t'ASCII",              Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("'\u{3435}'_",             Token::Character),
+            ScannerTestSlice("'\u{3435}'_",             Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                       Token::Whitespace),
             // And only words, symbols are not suffixes
-            ScannerTestSlice("'='",                     Token::Character),
+            ScannerTestSlice("'='",                     Token::Literal(Lit::Character)),
             ScannerTestSlice("=",                       Token::Identifier),
-            ScannerTestSlice("'='",                     Token::Character),
+            ScannerTestSlice("'='",                     Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                       Token::Whitespace),
             // Unicode suffixes
-            ScannerTestSlice("'\u{1F74}'\u{1F74}",      Token::Character),
+            ScannerTestSlice("'\u{1F74}'\u{1F74}",      Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("'\\u{1F74}'\\u{1F74}",    Token::Character),
+            ScannerTestSlice("'\\u{1F74}'\\u{1F74}",    Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                       Token::Whitespace),
         ], &[], &[]);
     }
@@ -2794,20 +2795,20 @@ mod tests {
         check(&[
             // Inner invalid characters are treated as constituents of suffixes,
             // just as in regular identifiers.
-            ScannerTestSlice("'\\u{EEEE}'\\u{47f}\\u{DAAA}",    Token::Character),
+            ScannerTestSlice("'\\u{EEEE}'\\u{47f}\\u{DAAA}",    Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                               Token::Whitespace),
-            ScannerTestSlice("'\\u{EEEE}'b\\u6Fx",              Token::Character),
+            ScannerTestSlice("'\\u{EEEE}'b\\u6Fx",              Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                               Token::Whitespace),
             // However, if a literal is immediately followed by an invalid characters
             // they are not scanned over in anticipation of suffix. They are instantly
             // treated as Token::Unrecognized following the literal
-            ScannerTestSlice("'0'",                     Token::Character),
+            ScannerTestSlice("'0'",                     Token::Literal(Lit::Character)),
             ScannerTestSlice("\\u0\\u1",                Token::Unrecognized),
             ScannerTestSlice("\t",                      Token::Whitespace),
-            ScannerTestSlice("'\\u{F000}'",             Token::Character),
+            ScannerTestSlice("'\\u{F000}'",             Token::Literal(Lit::Character)),
             ScannerTestSlice("\\u{F000}",               Token::Unrecognized),
             ScannerTestSlice("\t",                      Token::Whitespace),
-            ScannerTestSlice("'f'",                     Token::Character),
+            ScannerTestSlice("'f'",                     Token::Literal(Lit::Character)),
             ScannerTestSlice("\\",                      Token::Unrecognized),
             ScannerTestSlice("x",                       Token::Identifier),
         ], &[
@@ -2820,18 +2821,18 @@ mod tests {
     fn character_type_suffixes_after_invalid() {
         check(&[
             // Type suffixes are scanned over just fine after invalid characters
-            ScannerTestSlice("'\\u{DADA}'u32",          Token::Character),
+            ScannerTestSlice("'\\u{DADA}'u32",          Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("''cc",                    Token::Character),
-            ScannerTestSlice("''",                      Token::Character),
+            ScannerTestSlice("''cc",                    Token::Literal(Lit::Character)),
+            ScannerTestSlice("''",                      Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("'\\u0'_\\u0",             Token::Character),
+            ScannerTestSlice("'\\u0'_\\u0",             Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("'\\5'q",                  Token::Character),
+            ScannerTestSlice("'\\5'q",                  Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("'\r'foo",                 Token::Character),
+            ScannerTestSlice("'\r'foo",                 Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("'some'suffix",            Token::Character),
+            ScannerTestSlice("'some'suffix",            Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                       Token::Whitespace),
             // But missing quotes are something else
             ScannerTestSlice("'foo",                    Token::Unrecognized),
@@ -2856,30 +2857,30 @@ mod tests {
     #[test]
     fn string_basic() {
         check(&[
-            ScannerTestSlice(r#""""#,    Token::String),
+            ScannerTestSlice(r#""""#,    Token::Literal(Lit::String)),
             ScannerTestSlice(" ",        Token::Whitespace),
-            ScannerTestSlice(r#"'"'"#,   Token::Character),
-            ScannerTestSlice(r#""'""#,   Token::String),
+            ScannerTestSlice(r#"'"'"#,   Token::Literal(Lit::Character)),
+            ScannerTestSlice(r#""'""#,   Token::Literal(Lit::String)),
             ScannerTestSlice(" ",        Token::Whitespace),
-            ScannerTestSlice(r#""foo""#, Token::String),
-            ScannerTestSlice(r#""bar""#, Token::String),
+            ScannerTestSlice(r#""foo""#, Token::Literal(Lit::String)),
+            ScannerTestSlice(r#""bar""#, Token::Literal(Lit::String)),
             ScannerTestSlice(" ",        Token::Whitespace),
-            ScannerTestSlice(r#""`!@#$%^&*()_+:<>?';[]{}=""#, Token::String),
+            ScannerTestSlice(r#""`!@#$%^&*()_+:<>?';[]{}=""#, Token::Literal(Lit::String)),
         ], &[], &[]);
     }
 
     #[test]
     fn string_unicode() {
         check(&[
-            ScannerTestSlice("\"\u{0395}\u{03C9}\u{03C2}\u{03BD}\u{03B5}\"",        Token::String),
+            ScannerTestSlice("\"\u{0395}\u{03C9}\u{03C2}\u{03BD}\u{03B5}\"",        Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                                               Token::Whitespace),
-            ScannerTestSlice("\"\u{041A}\u{044E}\u{043C}\u{043A}\u{0443}\"",        Token::String),
+            ScannerTestSlice("\"\u{041A}\u{044E}\u{043C}\u{043A}\u{0443}\"",        Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                                               Token::Whitespace),
-            ScannerTestSlice("\"\u{4EE3}\u{3072}\u{5099}\u{9752}\u{8CBB}\"",        Token::String),
+            ScannerTestSlice("\"\u{4EE3}\u{3072}\u{5099}\u{9752}\u{8CBB}\"",        Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                                               Token::Whitespace),
-            ScannerTestSlice("\"\u{0627}\u{0644}\u{062D}\u{0643}\u{0648}\u{0645}\"",Token::String),
+            ScannerTestSlice("\"\u{0627}\u{0644}\u{062D}\u{0643}\u{0648}\u{0645}\"",Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                                               Token::Whitespace),
-            ScannerTestSlice("\"\u{100100}\u{100200}\u{103000}\u{10FEEE}\u{FEFF}\"",Token::String),
+            ScannerTestSlice("\"\u{100100}\u{100200}\u{103000}\u{10FEEE}\u{FEFF}\"",Token::Literal(Lit::String)),
         ], &[], &[]);
     }
 
@@ -2887,11 +2888,11 @@ mod tests {
     fn string_escapes() {
         check(&[
             // C-style escapes supported by characters
-            ScannerTestSlice(r#""\0\t\r\n""#,    Token::String),
+            ScannerTestSlice(r#""\0\t\r\n""#,    Token::Literal(Lit::String)),
             // Double quotes and backslashes must be escaped in strings
-            ScannerTestSlice(r#""\\\" \"\\\"""#, Token::String),
+            ScannerTestSlice(r#""\\\" \"\\\"""#, Token::Literal(Lit::String)),
             // Nulls and tabs can be used unescaped
-            ScannerTestSlice("\"\t\0\t \tx\0\"", Token::String),
+            ScannerTestSlice("\"\t\0\t \tx\0\"", Token::Literal(Lit::String)),
         ], &[], &[]);
     }
 
@@ -2899,12 +2900,12 @@ mod tests {
     fn string_unicode_escapes() {
         check(&[
             // Strings support both byte escapes...
-            ScannerTestSlice(r#""\x00\x3D\x70 \x50\x6E""#,   Token::String),
+            ScannerTestSlice(r#""\x00\x3D\x70 \x50\x6E""#,   Token::Literal(Lit::String)),
             // ...and Unicode escapes...
-            ScannerTestSlice(r#""\u{3} \u{12F1E}\u{F0F0}""#, Token::String),
+            ScannerTestSlice(r#""\u{3} \u{12F1E}\u{F0F0}""#, Token::Literal(Lit::String)),
             // ...and, as with characters, somewhat care about their semantics.
-            ScannerTestSlice(r#""\xFF\xFE\x00\xDE\xAD""#,    Token::String),
-            ScannerTestSlice(r#""\u{D900}\u{F0F0F090909}""#, Token::String),
+            ScannerTestSlice(r#""\xFF\xFE\x00\xDE\xAD""#,    Token::Literal(Lit::String)),
+            ScannerTestSlice(r#""\u{D900}\u{F0F0F090909}""#, Token::Literal(Lit::String)),
         ], &[ Span::new(49, 53), Span::new(53, 57), Span::new(61, 65), Span::new(65, 69),
               Span::new(71, 79), Span::new(79, 94) ], &[]);
     }
@@ -2912,21 +2913,21 @@ mod tests {
     #[test]
     fn string_multiline() {
         check(&[
-            ScannerTestSlice("\"multiline\ndemo\"",            Token::String),
+            ScannerTestSlice("\"multiline\ndemo\"",            Token::Literal(Lit::String)),
             ScannerTestSlice("\n",                             Token::Whitespace),
-            ScannerTestSlice("\"windows\r\nline\r\nendings\"", Token::String),
+            ScannerTestSlice("\"windows\r\nline\r\nendings\"", Token::Literal(Lit::String)),
             ScannerTestSlice("\n",                             Token::Whitespace),
-            ScannerTestSlice("\"bare\rCR character\"",         Token::String),
+            ScannerTestSlice("\"bare\rCR character\"",         Token::Literal(Lit::String)),
             ScannerTestSlice("\n",                             Token::Whitespace),
-            ScannerTestSlice("\"continuation\\\nstring\"",     Token::String),
+            ScannerTestSlice("\"continuation\\\nstring\"",     Token::Literal(Lit::String)),
             ScannerTestSlice("\n",                             Token::Whitespace),
-            ScannerTestSlice("\"windows\\\r\ncontinuation\"",  Token::String),
+            ScannerTestSlice("\"windows\\\r\ncontinuation\"",  Token::Literal(Lit::String)),
             ScannerTestSlice("\n",                             Token::Whitespace),
-            ScannerTestSlice("\"cont\\\n\t\t  with space\"",   Token::String),
+            ScannerTestSlice("\"cont\\\n\t\t  with space\"",   Token::Literal(Lit::String)),
             ScannerTestSlice("\n",                             Token::Whitespace),
-            ScannerTestSlice("\"\\\r\n\none more time\"",      Token::String),
+            ScannerTestSlice("\"\\\r\n\none more time\"",      Token::Literal(Lit::String)),
             ScannerTestSlice("\n",                             Token::Whitespace),
-            ScannerTestSlice("\"but\\\rbare CR doesn't work\"", Token::String),
+            ScannerTestSlice("\"but\\\rbare CR doesn't work\"", Token::Literal(Lit::String)),
         ], &[ Span::new(47, 48), Span::new(158, 159), Span::new(157, 159) ], &[]);
     }
 
@@ -2951,42 +2952,42 @@ mod tests {
     #[test]
     fn string_incorrect_unicode_escape_length() {
         check(&[
-            ScannerTestSlice(r#""\x""#,    Token::String),
+            ScannerTestSlice(r#""\x""#,    Token::Literal(Lit::String)),
             ScannerTestSlice(r#" "#,       Token::Whitespace),
-            ScannerTestSlice(r#""\x1""#,   Token::String),
+            ScannerTestSlice(r#""\x1""#,   Token::Literal(Lit::String)),
             ScannerTestSlice(r#" "#,       Token::Whitespace),
-            ScannerTestSlice(r#""\x123""#, Token::String),
+            ScannerTestSlice(r#""\x123""#, Token::Literal(Lit::String)),
             ScannerTestSlice(r#" "#,       Token::Whitespace),
-            ScannerTestSlice(r#""\u{}""#,  Token::String),
+            ScannerTestSlice(r#""\u{}""#,  Token::Literal(Lit::String)),
         ], &[ Span::new(1, 3), Span::new(6, 9), Span::new(12, 17), Span::new(22, 24) ], &[]);
     }
 
     #[test]
     fn string_incorrect_unicode_braces() {
         check(&[
-            ScannerTestSlice(r#""\u{123""#,                                 Token::String),
+            ScannerTestSlice(r#""\u{123""#,                                 Token::Literal(Lit::String)),
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
-            ScannerTestSlice(r#""\u{""#,                                    Token::String),
+            ScannerTestSlice(r#""\u{""#,                                    Token::Literal(Lit::String)),
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
-            ScannerTestSlice(r#""\u{uiui}""#,                               Token::String),
+            ScannerTestSlice(r#""\u{uiui}""#,                               Token::Literal(Lit::String)),
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
-            ScannerTestSlice(r#""\u{uiui""#,                                Token::String),
+            ScannerTestSlice(r#""\u{uiui""#,                                Token::Literal(Lit::String)),
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
-            ScannerTestSlice(r#""\u{some long string}""#,                   Token::String),
+            ScannerTestSlice(r#""\u{some long string}""#,                   Token::Literal(Lit::String)),
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
-            ScannerTestSlice(r#""\u{some long string""#,                    Token::String),
+            ScannerTestSlice(r#""\u{some long string""#,                    Token::Literal(Lit::String)),
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
-            ScannerTestSlice("\"\\u{123, missing\nsome text after that}\"", Token::String),
+            ScannerTestSlice("\"\\u{123, missing\nsome text after that}\"", Token::Literal(Lit::String)),
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
-            ScannerTestSlice("\"\\u{456, missing\r\nsome more text\"",      Token::String),
+            ScannerTestSlice("\"\\u{456, missing\r\nsome more text\"",      Token::Literal(Lit::String)),
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
-            ScannerTestSlice("\"\\u{and bare carriage\rreturn}\"",          Token::String),
+            ScannerTestSlice("\"\\u{and bare carriage\rreturn}\"",          Token::Literal(Lit::String)),
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
-            ScannerTestSlice("\"\\u{line ends\\\n here}\"",                 Token::String),
+            ScannerTestSlice("\"\\u{line ends\\\n here}\"",                 Token::Literal(Lit::String)),
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
-            ScannerTestSlice("\"\\u{with this\\u{123}\"",                   Token::String),
+            ScannerTestSlice("\"\\u{with this\\u{123}\"",                   Token::Literal(Lit::String)),
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
-            ScannerTestSlice("\"\\u{or this\\f\"",                          Token::String),
+            ScannerTestSlice("\"\\u{or this\\f\"",                          Token::Literal(Lit::String)),
             ScannerTestSlice(r#" "#,                                        Token::Whitespace),
             ScannerTestSlice(r#""\u{check missing"#,                        Token::Unrecognized),
         ], &[
@@ -3004,13 +3005,13 @@ mod tests {
     #[test]
     fn string_unicode_missing_opening() {
         check(&[
-            ScannerTestSlice(r#""\u""#,       Token::String),
+            ScannerTestSlice(r#""\u""#,       Token::Literal(Lit::String)),
             ScannerTestSlice(" ",             Token::Whitespace),
-            ScannerTestSlice(r#""\u}""#,      Token::String),
+            ScannerTestSlice(r#""\u}""#,      Token::Literal(Lit::String)),
             ScannerTestSlice(" ",             Token::Whitespace),
-            ScannerTestSlice(r#""\uguu~""#,   Token::String),
+            ScannerTestSlice(r#""\uguu~""#,   Token::Literal(Lit::String)),
             ScannerTestSlice(" ",             Token::Whitespace),
-            ScannerTestSlice(r#""\ux\uy""#,   Token::String),
+            ScannerTestSlice(r#""\ux\uy""#,   Token::Literal(Lit::String)),
         ], &[ Span::new(3, 3), Span::new(8, 9), Span::new(14, 14), Span::new(23, 23),
               Span::new(26, 26) ], &[]);
     }
@@ -3018,7 +3019,7 @@ mod tests {
     #[test]
     fn string_unicode_bare_digits() {
         check(&[
-            ScannerTestSlice(r#""\u0000\u9\uDEAD\u101111\u99999999999\u1}\u""#, Token::String),
+            ScannerTestSlice(r#""\u0000\u9\uDEAD\u101111\u99999999999\u1}\u""#, Token::Literal(Lit::String)),
         ], &[ Span::new( 3,  7), Span::new( 9, 10), Span::new(12, 16), Span::new(10, 16),
               Span::new(18, 24), Span::new(26, 37), Span::new(24, 37), Span::new(39, 39),
               Span::new(43, 43),
@@ -3029,9 +3030,9 @@ mod tests {
     fn string_unknown_escapes() {
         check(&[
             // Unsupported C escapes
-            ScannerTestSlice("\"\\a\\b\\f\\v\\?\\'\"",    Token::String),
+            ScannerTestSlice("\"\\a\\b\\f\\v\\?\\'\"",    Token::Literal(Lit::String)),
             // Unsupported hell-knows-whats
-            ScannerTestSlice("\"\\X9\\!\\\u{0742}\\y\"",  Token::String),
+            ScannerTestSlice("\"\\X9\\!\\\u{0742}\\y\"",  Token::Literal(Lit::String)),
         ], &[ Span::new( 1,  3), Span::new( 3,  5), Span::new( 5,  7), Span::new( 7,  9),
               Span::new( 9, 11), Span::new(11, 13), Span::new(15, 17), Span::new(18, 20),
               Span::new(20, 23), Span::new(23, 25), ], &[]);
@@ -3043,23 +3044,23 @@ mod tests {
     fn string_type_suffixes() {
         check(&[
             // Suffixes are words
-            ScannerTestSlice("\"x\"wide",               Token::String),
+            ScannerTestSlice("\"x\"wide",               Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("\"\t\"ASCII",             Token::String),
+            ScannerTestSlice("\"\t\"ASCII",             Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("\"\\t\"ASCII",            Token::String),
+            ScannerTestSlice("\"\\t\"ASCII",            Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("\"\u{3435}\"_",           Token::String),
+            ScannerTestSlice("\"\u{3435}\"_",           Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                       Token::Whitespace),
             // And only words, symbols are not suffixes
-            ScannerTestSlice("\"=\"",                   Token::String),
+            ScannerTestSlice("\"=\"",                   Token::Literal(Lit::String)),
             ScannerTestSlice("==",                      Token::Identifier),
-            ScannerTestSlice("\"=\"",                   Token::String),
+            ScannerTestSlice("\"=\"",                   Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                       Token::Whitespace),
             // Unicode suffixes
-            ScannerTestSlice("\"\u{1F74}\"\u{1F74}",    Token::String),
+            ScannerTestSlice("\"\u{1F74}\"\u{1F74}",    Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("\"\\u{1F74}\"\\u{1F74}",  Token::String),
+            ScannerTestSlice("\"\\u{1F74}\"\\u{1F74}",  Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                       Token::Whitespace),
         ], &[], &[]);
     }
@@ -3069,19 +3070,19 @@ mod tests {
         check(&[
             // Inner invalid characters are treated as constituents of suffixes,
             // just as in regular identifiers.
-            ScannerTestSlice("\"fofo\"\\u{47f}\\u{DAAA}",   Token::String),
-            ScannerTestSlice("\"\"b\\u4Fx",                 Token::String),
+            ScannerTestSlice("\"fofo\"\\u{47f}\\u{DAAA}",   Token::Literal(Lit::String)),
+            ScannerTestSlice("\"\"b\\u4Fx",                 Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                           Token::Whitespace),
             // However, if a literal is immediately followed by an invalid characters
             // they are not scanned over in anticipation of suffix. They are instantly
             // treated as Token::Unrecognized following the literal
-            ScannerTestSlice("\"\\\"\"",                Token::String),
+            ScannerTestSlice("\"\\\"\"",                Token::Literal(Lit::String)),
             ScannerTestSlice("\\u3F",                   Token::Unrecognized),
             ScannerTestSlice("\n",                      Token::Whitespace),
-            ScannerTestSlice("\"\\u{F000}\\u{D800}\"",  Token::String),
+            ScannerTestSlice("\"\\u{F000}\\u{D800}\"",  Token::Literal(Lit::String)),
             ScannerTestSlice("\\u{F000}",               Token::Unrecognized),
             ScannerTestSlice("\t",                      Token::Whitespace),
-            ScannerTestSlice("\"foo\"",                 Token::String),
+            ScannerTestSlice("\"foo\"",                 Token::Literal(Lit::String)),
             ScannerTestSlice("\\",                      Token::Unrecognized),
             ScannerTestSlice("U900",                    Token::Identifier),
         ], &[
@@ -3094,15 +3095,15 @@ mod tests {
     fn string_type_suffixes_after_invalid() {
         check(&[
             // Type suffixes are scanned over just fine after invalid strings
-            ScannerTestSlice("\"\\u0\"_\\u0",           Token::String),
+            ScannerTestSlice("\"\\u0\"_\\u0",           Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("\"\\5\"q",                Token::String),
+            ScannerTestSlice("\"\\5\"q",                Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("\"\r\"foo",               Token::String),
+            ScannerTestSlice("\"\r\"foo",               Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("\"\\x\"zog",              Token::String),
+            ScannerTestSlice("\"\\x\"zog",              Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("\"\\x4500\"__",           Token::String),
+            ScannerTestSlice("\"\\x4500\"__",           Token::Literal(Lit::String)),
             // We aren't able to test missing quotes as they are detected only at EOF
         ], &[ Span::new( 3,  4), Span::new( 8,  9), Span::new( 6,  9), Span::new(11, 13),
               Span::new(17, 18), Span::new(24, 26), Span::new(32, 38),
@@ -3115,11 +3116,11 @@ mod tests {
     #[test]
     fn raw_string_basic() {
         check(&[
-            ScannerTestSlice("r\"\"",              Token::RawString),
+            ScannerTestSlice("r\"\"",              Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                  Token::Whitespace),
-            ScannerTestSlice("r\"test\"",          Token::RawString),
+            ScannerTestSlice("r\"test\"",          Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                  Token::Whitespace),
-            ScannerTestSlice("r\"h\\a\\-\\h\\a\"", Token::RawString),
+            ScannerTestSlice("r\"h\\a\\-\\h\\a\"", Token::Literal(Lit::RawString)),
         ], &[], &[]);
     }
 
@@ -3127,72 +3128,72 @@ mod tests {
     fn raw_string_unicode() {
         check(&[
             ScannerTestSlice("r\"\u{0442}\u{044D}\u{0441}\u{0442}\"",
-                                                   Token::RawString),
+                                                   Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                  Token::Whitespace),
             ScannerTestSlice("r\"\u{D1F}\u{D46}\u{D38}\u{D4D}\u{D31}\u{D4D}\u{D31}\u{D4D}\"",
-                                                   Token::RawString),
+                                                   Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                  Token::Whitespace),
             ScannerTestSlice("r\"\u{0074}\u{0068}\u{1EED}\"",
-                                                   Token::RawString),
+                                                   Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                  Token::Whitespace),
             ScannerTestSlice("r\"\u{10E2}\u{10D4}\u{10E1}\u{10E2}\u{10D8}\"",
-                                                   Token::RawString),
+                                                   Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                  Token::Whitespace),
             ScannerTestSlice("r\"\u{100100}\u{100200}\u{103000}\\\u{10FEEE}\u{FEFF}\"",
-                                                   Token::RawString),
+                                                   Token::Literal(Lit::RawString)),
         ], &[], &[]);
     }
 
     #[test]
     fn raw_string_hashed() {
         check(&[
-            ScannerTestSlice("r\"#\"",             Token::RawString),
+            ScannerTestSlice("r\"#\"",             Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                  Token::Whitespace),
-            ScannerTestSlice("r\"##\"",            Token::RawString),
+            ScannerTestSlice("r\"##\"",            Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                  Token::Whitespace),
-            ScannerTestSlice("r#\"\"\"\"#",        Token::RawString),
+            ScannerTestSlice("r#\"\"\"\"#",        Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                  Token::Whitespace),
-            ScannerTestSlice("r##\"\"#\"\"##",     Token::RawString),
+            ScannerTestSlice("r##\"\"#\"\"##",     Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                  Token::Whitespace),
-            ScannerTestSlice("r###################\"test\"###################", Token::RawString),
+            ScannerTestSlice("r###################\"test\"###################", Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                  Token::Whitespace),
-            ScannerTestSlice("r#\"<img src=\"some\test.jpg\"/>\"#", Token::RawString),
+            ScannerTestSlice("r#\"<img src=\"some\test.jpg\"/>\"#", Token::Literal(Lit::RawString)),
         ], &[], &[]);
     }
 
     #[test]
     fn raw_string_multiline() {
         check(&[
-            ScannerTestSlice("r\"multi\nline\"",        Token::RawString),
+            ScannerTestSlice("r\"multi\nline\"",        Token::Literal(Lit::RawString)),
             ScannerTestSlice(",",                       Token::Comma),
-            ScannerTestSlice("r\"windows\r\nline\"",    Token::RawString),
+            ScannerTestSlice("r\"windows\r\nline\"",    Token::Literal(Lit::RawString)),
             ScannerTestSlice(",",                       Token::Comma),
-            ScannerTestSlice("r\"extra\n\n\npadding\"", Token::RawString),
+            ScannerTestSlice("r\"extra\n\n\npadding\"", Token::Literal(Lit::RawString)),
             ScannerTestSlice(",",                       Token::Comma),
-            ScannerTestSlice("r#\"\"\n\"\n\"#",         Token::RawString),
+            ScannerTestSlice("r#\"\"\n\"\n\"#",         Token::Literal(Lit::RawString)),
             ScannerTestSlice(",",                       Token::Comma),
-            ScannerTestSlice("r##\"\r\n#\r\n\"##",      Token::RawString),
+            ScannerTestSlice("r##\"\r\n#\r\n\"##",      Token::Literal(Lit::RawString)),
             ScannerTestSlice(",",                       Token::Comma),
-            ScannerTestSlice("r\"line\\\nbreak\"",      Token::RawString), // These aren't escapes,
+            ScannerTestSlice("r\"line\\\nbreak\"",      Token::Literal(Lit::RawString)), // These aren't escapes,
             ScannerTestSlice(",",                       Token::Comma),     // just some slashes
-            ScannerTestSlice("r\"more\\\r\nbreak\"",    Token::RawString), // followed by a newline
+            ScannerTestSlice("r\"more\\\r\nbreak\"",    Token::Literal(Lit::RawString)), // followed by a newline
         ], &[], &[]);
     }
 
     #[test]
     fn raw_string_invalid_escape_sequences() {
         check(&[
-            ScannerTestSlice("r\"\\\"",                 Token::RawString),
+            ScannerTestSlice("r\"\\\"",                 Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("r\"\\\u{1234}\"",         Token::RawString),
+            ScannerTestSlice("r\"\\\u{1234}\"",         Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("r\"\\u{foo}\\u}{\\ufo\"", Token::RawString),
+            ScannerTestSlice("r\"\\u{foo}\\u}{\\ufo\"", Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("r\"\\.\\9\\/\"",          Token::RawString),
+            ScannerTestSlice("r\"\\.\\9\\/\"",          Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("r\"\\xXx\"",              Token::RawString),
+            ScannerTestSlice("r\"\\xXx\"",              Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("r\"\\r\\#\\m\"",          Token::RawString),
+            ScannerTestSlice("r\"\\r\\#\\m\"",          Token::Literal(Lit::RawString)),
         ], &[], &[]);
     }
 
@@ -3227,11 +3228,11 @@ mod tests {
     #[test]
     fn raw_string_bare_cr() {
         check(&[
-            ScannerTestSlice("r\"te\rst\"",         Token::RawString),
+            ScannerTestSlice("r\"te\rst\"",         Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                   Token::Whitespace),
-            ScannerTestSlice("r\"test\\\r\"",       Token::RawString),
+            ScannerTestSlice("r\"test\\\r\"",       Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                   Token::Whitespace),
-            ScannerTestSlice("r#\"bare\r\r\rCR\"#", Token::RawString),
+            ScannerTestSlice("r#\"bare\r\r\rCR\"#", Token::Literal(Lit::RawString)),
         ], &[ Span::new( 4,  5), Span::new(16, 17), Span::new(26, 27), Span::new(27, 28),
               Span::new(28, 29) ], &[]);
     }
@@ -3244,42 +3245,42 @@ mod tests {
     fn raw_string_type_suffixes() {
         check(&[
             // Suffixes are words
-            ScannerTestSlice("r\"x\"wide",              Token::RawString),
+            ScannerTestSlice("r\"x\"wide",              Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("r##\"\t\"##ASCII",        Token::RawString),
+            ScannerTestSlice("r##\"\t\"##ASCII",        Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("r\"\\t\"ASCII",           Token::RawString),
+            ScannerTestSlice("r\"\\t\"ASCII",           Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("r#\"\u{3435}\"#_",        Token::RawString),
+            ScannerTestSlice("r#\"\u{3435}\"#_",        Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                       Token::Whitespace),
             // And only words, symbols are not suffixes
-            ScannerTestSlice("r\"=\"",                  Token::RawString),
+            ScannerTestSlice("r\"=\"",                  Token::Literal(Lit::RawString)),
             ScannerTestSlice("==",                      Token::Identifier),
-            ScannerTestSlice("r\"=\"",                  Token::RawString),
+            ScannerTestSlice("r\"=\"",                  Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                       Token::Whitespace),
             // Unicode suffixes
-            ScannerTestSlice("r\"\u{1F74}\"\u{1F74}",   Token::RawString),
+            ScannerTestSlice("r\"\u{1F74}\"\u{1F74}",   Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("r\"\\u{1F74}\"\\u{1F74}", Token::RawString),
+            ScannerTestSlice("r\"\\u{1F74}\"\\u{1F74}", Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                       Token::Whitespace),
             // Suffixes (like other tokens) are scanned over geedily, but there
             // is an exception for raw strings. In sequences /r"/ and /r#/, the
             // 'r' character is never considered a type suffix. However, it is
             // true only for the *first* 'r'. Everything else is scanned over
             // greedily as usual.
-            ScannerTestSlice("r\"\"",                   Token::RawString),
-            ScannerTestSlice("r\"\"rr",                 Token::RawString),
-            ScannerTestSlice("\"\"",                    Token::String),
+            ScannerTestSlice("r\"\"",                   Token::Literal(Lit::RawString)),
+            ScannerTestSlice("r\"\"rr",                 Token::Literal(Lit::RawString)),
+            ScannerTestSlice("\"\"",                    Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("r#\"1\"#",                Token::RawString),
-            ScannerTestSlice("r##\"x\"##",              Token::RawString),
+            ScannerTestSlice("r#\"1\"#",                Token::Literal(Lit::RawString)),
+            ScannerTestSlice("r##\"x\"##",              Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                       Token::Whitespace),
             ScannerTestSlice("rawr",                    Token::Identifier),
-            ScannerTestSlice("\"123\"",                 Token::String),
+            ScannerTestSlice("\"123\"",                 Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("r\"x\"boar",              Token::RawString),
+            ScannerTestSlice("r\"x\"boar",              Token::Literal(Lit::RawString)),
             ScannerTestSlice("#",                       Token::Hash),
-            ScannerTestSlice("\"x\"",                   Token::String),
+            ScannerTestSlice("\"x\"",                   Token::Literal(Lit::String)),
             ScannerTestSlice("#",                       Token::Hash),
         ], &[], &[]);
     }
@@ -3289,28 +3290,28 @@ mod tests {
         check(&[
             // Inner invalid characters are treated as constituents of suffixes,
             // just as in regular identifiers.
-            ScannerTestSlice("r\"fofo\"\\u{47f}\\u{DAAA}",  Token::RawString),
+            ScannerTestSlice("r\"fofo\"\\u{47f}\\u{DAAA}",  Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                           Token::Whitespace),
-            ScannerTestSlice("r#\"\"#b\\u4Fx",              Token::RawString),
+            ScannerTestSlice("r#\"\"#b\\u4Fx",              Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                           Token::Whitespace),
             // However, if a literal is immediately followed by an invalid characters
             // they are not scanned over in anticipation of suffix. They are instantly
             // treated as Token::Unrecognized following the literal
-            ScannerTestSlice("r\"\\\"",                     Token::RawString),
+            ScannerTestSlice("r\"\\\"",                     Token::Literal(Lit::RawString)),
             ScannerTestSlice("\\u3F",                       Token::Unrecognized),
             ScannerTestSlice("\n",                          Token::Whitespace),
-            ScannerTestSlice("r##\"\\u{F000}\\u{D800}\"##", Token::RawString),
+            ScannerTestSlice("r##\"\\u{F000}\\u{D800}\"##", Token::Literal(Lit::RawString)),
             ScannerTestSlice("\\u{F000}",                   Token::Unrecognized),
             ScannerTestSlice("\t",                          Token::Whitespace),
-            ScannerTestSlice("r\"foo\"",                    Token::RawString),
+            ScannerTestSlice("r\"foo\"",                    Token::Literal(Lit::RawString)),
             ScannerTestSlice("\\",                          Token::Unrecognized),
             ScannerTestSlice("U900",                        Token::Identifier),
             ScannerTestSlice("\n",                          Token::Whitespace),
             // Specifically for raw strings: \u{72} is not valid starter for them
-            ScannerTestSlice("r#\"\"#",                     Token::RawString),
+            ScannerTestSlice("r#\"\"#",                     Token::Literal(Lit::RawString)),
             ScannerTestSlice("\\u{72}",                     Token::Unrecognized),
             ScannerTestSlice("#",                           Token::Hash),
-            ScannerTestSlice("\"4\"",                       Token::String),
+            ScannerTestSlice("\"4\"",                       Token::Literal(Lit::String)),
             ScannerTestSlice("#",                           Token::Hash),
         ], &[
             Span::new(14, 22), Span::new(31, 33), Span::new(29, 33), Span::new(41, 43),
@@ -3322,11 +3323,11 @@ mod tests {
     fn raw_string_type_suffixes_after_invalid() {
         check(&[
             // Type suffixes are scanned over just fine after invalid strings
-            ScannerTestSlice("r\"\\u0\"_\\u0",          Token::RawString),
+            ScannerTestSlice("r\"\\u0\"_\\u0",          Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("r##\"\\5\"##q",           Token::RawString),
+            ScannerTestSlice("r##\"\\5\"##q",           Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                       Token::Whitespace),
-            ScannerTestSlice("r\"\r\"foo",              Token::RawString),
+            ScannerTestSlice("r\"\r\"foo",              Token::Literal(Lit::RawString)),
             // We aren't able to test missing quotes as they are detected only at EOF
         ], &[ Span::new( 9, 10), Span::new( 7, 10), Span::new(24, 25) ], &[]);
     }
@@ -3799,7 +3800,7 @@ mod tests {
             ScannerTestSlice("::",                                          Token::Dualcolon),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice(r"\u",                                         Token::Unrecognized),
-            ScannerTestSlice("]",                                           Token::Rbrack),
+            ScannerTestSlice("]",                                           Token::CloseDelim(Delimiter::Bracket)),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("\\u",                                         Token::Unrecognized),
             ScannerTestSlice("\u{301b}",                                    Token::Identifier),
@@ -3851,7 +3852,7 @@ mod tests {
             // of a number, they do not count as XID_Continue which magically converts the whole
             // thing into a word identifier. The scanner never backtracks.
             ScannerTestSlice(r"\u{Some}\u{Invalid}\u{Stuff}",               Token::Unrecognized),
-            ScannerTestSlice(r"123",                                        Token::Integer),
+            ScannerTestSlice(r"123",                                        Token::Literal(Lit::Integer)),
             ScannerTestSlice(r" ",                                          Token::Whitespace),
             ScannerTestSlice(r"\u{Some}\u{Invalid}\u{Stuff}",               Token::Unrecognized),
             ScannerTestSlice(r"_123",                                       Token::Identifier),
@@ -3895,7 +3896,7 @@ mod tests {
             ScannerTestSlice("test\\",                                      Token::Identifier),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("\u{0307}\u{09E3}\\\u{1DA61}\u{200D}",         Token::Unrecognized),
-            ScannerTestSlice("1",                                           Token::Integer),
+            ScannerTestSlice("1",                                           Token::Literal(Lit::Integer)),
             ScannerTestSlice("\u{200C}\u{7F}\u{200D}",                      Token::Unrecognized),
             ScannerTestSlice("x\u{200D}y",                                  Token::Identifier),
             ScannerTestSlice("\n",                                          Token::Whitespace),
@@ -4007,19 +4008,19 @@ mod tests {
         check(&[
             // Raw strings start with an 'r' which is a valid starter of word identifiers.
             // We must not confuse them.
-            ScannerTestSlice("r\"awr\"",        Token::RawString),
+            ScannerTestSlice("r\"awr\"",        Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",               Token::Whitespace),
             ScannerTestSlice("ra",              Token::Identifier),
-            ScannerTestSlice("\"wr\"",          Token::String),
+            ScannerTestSlice("\"wr\"",          Token::Literal(Lit::String)),
             ScannerTestSlice(" ",               Token::Whitespace),
             ScannerTestSlice("raaaaa",          Token::Identifier),
             ScannerTestSlice("#",               Token::Hash),
             ScannerTestSlice("#",               Token::Hash),
-            ScannerTestSlice("\"wr\"",          Token::String),
+            ScannerTestSlice("\"wr\"",          Token::Literal(Lit::String)),
             ScannerTestSlice("#",               Token::Hash),
             ScannerTestSlice("#",               Token::Hash),
             ScannerTestSlice(" ",               Token::Whitespace),
-            ScannerTestSlice("r#\"awr\"#",      Token::RawString),
+            ScannerTestSlice("r#\"awr\"#",      Token::Literal(Lit::RawString)),
         ], &[], &[]);
     }
 
@@ -4081,10 +4082,10 @@ mod tests {
             ScannerTestSlice("y:",                                          Token::ImplicitSymbol),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("z:",                                          Token::ImplicitSymbol),
-            ScannerTestSlice("':'",                                         Token::Character),
+            ScannerTestSlice("':'",                                         Token::Literal(Lit::Character)),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("_:",                                          Token::ImplicitSymbol),
-            ScannerTestSlice("10",                                          Token::Integer),
+            ScannerTestSlice("10",                                          Token::Literal(Lit::Integer)),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("zork",                                        Token::Identifier),
             ScannerTestSlice("::",                                          Token::Dualcolon),
@@ -4097,9 +4098,9 @@ mod tests {
             ScannerTestSlice(":",                                           Token::Colon),
             ScannerTestSlice(";",                                           Token::Semicolon),
             ScannerTestSlice(":",                                           Token::Colon),
-            ScannerTestSlice("[",                                           Token::Lbrack),
+            ScannerTestSlice("[",                                           Token::OpenDelim(Delimiter::Bracket)),
             ScannerTestSlice(":",                                           Token::Colon),
-            ScannerTestSlice("]",                                           Token::Rbrack),
+            ScannerTestSlice("]",                                           Token::CloseDelim(Delimiter::Bracket)),
             ScannerTestSlice("\u{2025}",                                    Token::Identifier),
             ScannerTestSlice(":",                                           Token::Colon),
             ScannerTestSlice(" ",                                           Token::Whitespace),
@@ -4129,11 +4130,11 @@ mod tests {
             ScannerTestSlice("_",                                           Token::Identifier),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             // And cannot 'steal' others' suffixes
-            ScannerTestSlice("123foo",                                      Token::Integer),
+            ScannerTestSlice("123foo",                                      Token::Literal(Lit::Integer)),
             ScannerTestSlice(":",                                           Token::Colon),
             ScannerTestSlice("bar:",                                        Token::ImplicitSymbol),
             ScannerTestSlice(" ",                                           Token::Whitespace),
-            ScannerTestSlice("'x'x",                                        Token::Character),
+            ScannerTestSlice("'x'x",                                        Token::Literal(Lit::Character)),
             ScannerTestSlice("::",                                          Token::Dualcolon),
             ScannerTestSlice("y",                                           Token::Identifier),
         ], &[], &[]);
@@ -4265,11 +4266,11 @@ mod tests {
             ScannerTestSlice("`baz`",                                       Token::ExplicitSymbol),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("`o`",                                         Token::ExplicitSymbol),
-            ScannerTestSlice("r\"a\"",                                      Token::RawString),
+            ScannerTestSlice("r\"a\"",                                      Token::Literal(Lit::RawString)),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("`x`",                                         Token::ExplicitSymbol),
-            ScannerTestSlice("'y'",                                         Token::Character),
-            ScannerTestSlice("\"z\"",                                       Token::String),
+            ScannerTestSlice("'y'",                                         Token::Literal(Lit::Character)),
+            ScannerTestSlice("\"z\"",                                       Token::Literal(Lit::String)),
             ScannerTestSlice(" ",                                           Token::Whitespace),
             ScannerTestSlice("``",                                          Token::ExplicitSymbol),
             ScannerTestSlice("+",                                           Token::Identifier),
