@@ -277,12 +277,9 @@ impl<'a> StringScanner<'a> {
             match self.cur.unwrap() {
                 // Stop scanning at the first line ending, no matter what
                 '\n' => {
-                    self.read();
                     break;
                 }
                 '\r' if self.peek_is('\n') => {
-                    self.read();
-                    self.read();
                     break;
                 }
                 // Report bare CR characters as they may have meant to be line endings,
@@ -1800,16 +1797,16 @@ mod tests {
     #[test]
     fn line_comment_lf() {
         check(&[
-            ScannerTestSlice("// example line comment\n", Token::Comment),
-            ScannerTestSlice("       \t",                 Token::Whitespace),
+            ScannerTestSlice("// example line comment",     Token::Comment),
+            ScannerTestSlice("\n       \t",                 Token::Whitespace),
         ], &[], &[]);
     }
 
     #[test]
     fn line_comment_crlf() {
         check(&[
-            ScannerTestSlice("// example line comment\r\n", Token::Comment),
-            ScannerTestSlice("       \t",                   Token::Whitespace),
+            ScannerTestSlice("// example line comment",     Token::Comment),
+            ScannerTestSlice("\r\n       \t",               Token::Whitespace),
         ], &[], &[]);
     }
 
@@ -1823,18 +1820,20 @@ mod tests {
     #[test]
     fn line_comment_consecutive_lf() {
         check(&[
-            ScannerTestSlice("// line 1\n", Token::Comment),
-            ScannerTestSlice("// line 2\n", Token::Comment),
-            ScannerTestSlice("     ",       Token::Whitespace),
+            ScannerTestSlice("// line 1",       Token::Comment),
+            ScannerTestSlice("\n",              Token::Whitespace),
+            ScannerTestSlice("// line 2",       Token::Comment),
+            ScannerTestSlice("\n     ",         Token::Whitespace),
         ], &[], &[]);
     }
 
     #[test]
     fn line_comment_consecutive_crlf() {
         check(&[
-            ScannerTestSlice("// line 1\r\n", Token::Comment),
-            ScannerTestSlice("// line 2\r\n", Token::Comment),
-            ScannerTestSlice("     ",         Token::Whitespace),
+            ScannerTestSlice("// line 1",       Token::Comment),
+            ScannerTestSlice("\r\n",            Token::Whitespace),
+            ScannerTestSlice("// line 2",       Token::Comment),
+            ScannerTestSlice("\r\n     ",       Token::Whitespace),
         ], &[], &[]);
     }
 
@@ -1912,15 +1911,20 @@ mod tests {
     #[test]
     fn doc_comment_line() {
         check(&[
-            ScannerTestSlice("/// Example\n",                                   Token::DocComment),
-            ScannerTestSlice("/// Other line\r\n",                              Token::DocComment),
-            ScannerTestSlice("/// More\n",                                      Token::DocComment),
+            ScannerTestSlice("/// Example",                                     Token::DocComment),
             ScannerTestSlice("\n",                                              Token::Whitespace),
-            ScannerTestSlice("//! Inner comments\n",                            Token::DocComment),
-            ScannerTestSlice("//! Windows lines\r\n",                           Token::DocComment),
+            ScannerTestSlice("/// Other line",                                  Token::DocComment),
             ScannerTestSlice("\r\n",                                            Token::Whitespace),
-            ScannerTestSlice("/// Mixed\n",                                     Token::DocComment),
-            ScannerTestSlice("//! Mixed\r\n",                                   Token::DocComment),
+            ScannerTestSlice("/// More",                                        Token::DocComment),
+            ScannerTestSlice("\n\n",                                            Token::Whitespace),
+            ScannerTestSlice("//! Inner comments",                              Token::DocComment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("//! Windows lines",                               Token::DocComment),
+            ScannerTestSlice("\r\n\r\n",                                        Token::Whitespace),
+            ScannerTestSlice("/// Mixed",                                       Token::DocComment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("//! Mixed",                                       Token::DocComment),
+            ScannerTestSlice("\r\n",                                            Token::Whitespace),
         ], &[], &[]);
     }
 
@@ -1941,14 +1945,16 @@ mod tests {
     #[test]
     fn doc_comment_intertype_nesting() {
         check(&[
-            ScannerTestSlice("/// This /* is fine */\n",                        Token::DocComment),
-            ScannerTestSlice("//! This /*! is too\r\n",                         Token::DocComment),
+            ScannerTestSlice("/// This /* is fine */",                          Token::DocComment),
             ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("//! This /*! is too",                             Token::DocComment),
+            ScannerTestSlice("\r\n\n",                                          Token::Whitespace),
             ScannerTestSlice("/** Also // fine */",                             Token::DocComment),
             ScannerTestSlice("\n",                                              Token::Whitespace),
             ScannerTestSlice("/*! Fine as well // */",                          Token::DocComment),
             ScannerTestSlice("\r\n",                                            Token::Whitespace),
-            ScannerTestSlice("// /// These are also\n",                         Token::Comment),
+            ScannerTestSlice("// /// These are also",                           Token::Comment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
             ScannerTestSlice("/* /** // fine */ */",                            Token::Comment),
         ], &[], &[]);
     }
@@ -1964,9 +1970,10 @@ mod tests {
     #[test]
     fn doc_comment_bare_crs() {
         check(&[
-            ScannerTestSlice("/// bare crs\r///are errors\n",                   Token::DocComment),
-            ScannerTestSlice("//! in all\r\r\rkinds of doc-comments\n",         Token::DocComment),
+            ScannerTestSlice("/// bare crs\r///are errors",                     Token::DocComment),
             ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("//! in all\r\r\rkinds of doc-comments",           Token::DocComment),
+            ScannerTestSlice("\n\n",                                            Token::Whitespace),
             ScannerTestSlice("/** and I mean \r all */",                        Token::DocComment),
             ScannerTestSlice("\r\n",                                            Token::Whitespace),
             ScannerTestSlice("/*! like /* \r this */ */",                       Token::DocComment),
@@ -1978,32 +1985,42 @@ mod tests {
     #[test]
     fn doc_comment_non_docs() {
         check(&[
-            ScannerTestSlice("/////////////////////////////////\n",             Token::Comment),
-            ScannerTestSlice("// These are not doc comments\n",                 Token::Comment),
-            ScannerTestSlice("/////////////////////////////////\n",             Token::Comment),
+            ScannerTestSlice("/////////////////////////////////",               Token::Comment),
             ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("// These are not doc comments",                   Token::Comment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("/////////////////////////////////",               Token::Comment),
+            ScannerTestSlice("\n\n",                                            Token::Whitespace),
             ScannerTestSlice("/***\r\n * These are not as well\n ***/",         Token::Comment),
             ScannerTestSlice("\n",                                              Token::Whitespace),
-            ScannerTestSlice("//!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",              Token::DocComment),
-            ScannerTestSlice("//! Though this is one\n",                        Token::DocComment),
-            ScannerTestSlice("//!/////////////////////////////\n",              Token::DocComment),
-            ScannerTestSlice(" \n ",                                            Token::Whitespace),
-            ScannerTestSlice("/////////////////////////////////\n",             Token::Comment),
-            ScannerTestSlice("/// It's a bit tricky...\n",                      Token::DocComment),
-            ScannerTestSlice("/////////////////////////////////\n",             Token::Comment),
-            ScannerTestSlice("\r\n",                                            Token::Whitespace),
-            ScannerTestSlice("/// As well as this one, and this:\n",            Token::DocComment),
-            ScannerTestSlice("///\n",                                           Token::DocComment),
+            ScannerTestSlice("//!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",                Token::DocComment),
             ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("//! Though this is one",                          Token::DocComment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("//!/////////////////////////////",                Token::DocComment),
+            ScannerTestSlice("\n \n ",                                          Token::Whitespace),
+            ScannerTestSlice("/////////////////////////////////",               Token::Comment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("/// It's a bit tricky...",                        Token::DocComment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("/////////////////////////////////",               Token::Comment),
+            ScannerTestSlice("\n\r\n",                                          Token::Whitespace),
+            ScannerTestSlice("/// As well as this one, and this:",              Token::DocComment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
+            ScannerTestSlice("///",                                             Token::DocComment),
+            ScannerTestSlice("\n\n",                                            Token::Whitespace),
             ScannerTestSlice("/*!!! A doc-comment */",                          Token::DocComment),
             ScannerTestSlice("\r\t\n",                                          Token::Whitespace),
             ScannerTestSlice("/*!** A doc-comment as well **!*/",               Token::DocComment),
             ScannerTestSlice("\n",                                              Token::Whitespace),
-            ScannerTestSlice("// This is not a doc comment:\n",                 Token::Comment),
+            ScannerTestSlice("// This is not a doc comment:",                   Token::Comment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
             ScannerTestSlice("/**/",                                            Token::Comment),
-            ScannerTestSlice("// But this one is:\r\n",                         Token::Comment),
+            ScannerTestSlice("// But this one is:",                             Token::Comment),
+            ScannerTestSlice("\r\n",                                            Token::Whitespace),
             ScannerTestSlice("/*!*/",                                           Token::DocComment),
-            ScannerTestSlice("// And this one isn't:\n",                        Token::Comment),
+            ScannerTestSlice("// And this one isn't:",                          Token::Comment),
+            ScannerTestSlice("\n",                                              Token::Whitespace),
             ScannerTestSlice("/***/",                                           Token::Comment),
         ], &[], &[]);
     }
@@ -2066,7 +2083,7 @@ mod tests {
             ScannerTestSlice("00000", Token::Integer),
             ScannerTestSlice(",",     Token::Comma),
             ScannerTestSlice("00001", Token::Integer),
-            ScannerTestSlice(",",     Token::Comma),
+            ScannerTestSlice(".",     Token::Dot),
             ScannerTestSlice(" ",     Token::Whitespace),
             ScannerTestSlice("42",    Token::Integer),
             ScannerTestSlice(" ",     Token::Whitespace),
@@ -2248,7 +2265,8 @@ mod tests {
             ScannerTestSlice("1400e+12313", Token::Float),
             ScannerTestSlice(",",           Token::Comma),
             ScannerTestSlice("1400E-2323",  Token::Float),
-            ScannerTestSlice("//\n",        Token::Comment),
+            ScannerTestSlice("//",          Token::Comment),
+            ScannerTestSlice("\n",          Token::Whitespace),
             ScannerTestSlice("0e+0",        Token::Float),
             ScannerTestSlice(",",           Token::Comma),
             ScannerTestSlice("0001E1000",   Token::Float),
@@ -2727,6 +2745,8 @@ mod tests {
             ScannerTestSlice("\n",          Token::Whitespace),
             ScannerTestSlice("' '",         Token::Character),
             ScannerTestSlice("  ",          Token::Whitespace),
+            ScannerTestSlice("'\\\r'",      Token::Character),
+            ScannerTestSlice("  ",          Token::Whitespace),
             ScannerTestSlice("'foo\\",      Token::Unrecognized),
             ScannerTestSlice("\r\n",        Token::Whitespace),
             ScannerTestSlice("' '",         Token::Character),
@@ -2737,9 +2757,10 @@ mod tests {
         ], &[
             Span::new( 1,  3), Span::new( 6,  8), Span::new(11, 13), Span::new(16, 18),
             Span::new(21, 23), Span::new(26, 28), Span::new(25, 30), Span::new(32, 34),
-            Span::new(37, 40), Span::new(43, 45), Span::new(42, 47), Span::new(70, 72),
+            Span::new(37, 40), Span::new(43, 45), Span::new(42, 47), Span::new(58, 59),
+            Span::new(57, 59), Span::new(76, 78),
         ], &[
-            Span::new(48, 50), Span::new(56, 61), Span::new(68, 73), Span::new(75, 76),
+            Span::new(48, 50), Span::new(62, 67), Span::new(74, 79), Span::new(81, 82),
         ]);
     }
 
@@ -3949,9 +3970,14 @@ mod tests {
             ScannerTestSlice(r"test\u{0020}test",                           Token::Identifier),
             ScannerTestSlice(r" ",                                          Token::Whitespace),
             ScannerTestSlice(r"a\u{2B}b",                                   Token::Identifier),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice(r"*\u{3E}*",                                   Token::Identifier),
+            ScannerTestSlice(r" ",                                          Token::Whitespace),
+            ScannerTestSlice("\u{2045}\\u{60}",                             Token::Identifier),
         ], &[
-            Span::new( 1,  7), Span::new(16, 22), Span::new(26, 44), Span::new(45, 51),
-            Span::new(52, 58), Span::new(60, 66), Span::new(72, 80), Span::new(86, 92),
+            Span::new(  1,   7), Span::new( 16,  22), Span::new( 26,  44), Span::new( 45,  51),
+            Span::new( 52,  58), Span::new( 60,  66), Span::new( 72,  80), Span::new( 86,  92),
+            Span::new( 95, 101), Span::new(106, 112),
         ], &[]);
     }
 
@@ -4202,13 +4228,17 @@ mod tests {
             ScannerTestSlice("\n",                                          Token::Whitespace),
             ScannerTestSlice("`\\",                                         Token::Unrecognized),
             ScannerTestSlice("\n\t",                                        Token::Whitespace),
+            ScannerTestSlice("`\\",                                         Token::Unrecognized),
+            ScannerTestSlice("\r\n",                                        Token::Whitespace),
+            ScannerTestSlice("`\\\r`",                                      Token::ExplicitSymbol),
+            ScannerTestSlice("\t",                                          Token::Whitespace),
             ScannerTestSlice("test",                                        Token::Identifier),
             ScannerTestSlice("`",                                           Token::Unrecognized),
         ], &[
-            Span::new(25, 26), Span::new(38, 39),
+            Span::new(25, 26), Span::new(38, 39), Span::new(51, 52), Span::new(50, 52),
         ], &[
             Span::new( 0,  8), Span::new( 9, 19), Span::new(32, 33), Span::new(34, 35),
-            Span::new(41, 43), Span::new(49, 50),
+            Span::new(41, 43), Span::new(45, 47), Span::new(58, 59),
         ]);
     }
 
