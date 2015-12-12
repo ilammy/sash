@@ -14,7 +14,7 @@ use intern_pool::Atom;
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Token {
     /// Marker token denoting the end-of-token-stream condition.
-    EOF,
+    Eof,
 
     /// Non-significant whitespace.
     Whitespace,

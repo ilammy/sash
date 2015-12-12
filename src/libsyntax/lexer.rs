@@ -43,10 +43,10 @@ pub struct ScannedToken {
 /// However, a scanner will never reconsider its decisions about what it saw and where it was.
 pub trait Scanner {
     /// Checks whether the end of token stream has been reached.
-    /// If it is reached, the scanner will produce only `Token::EOF`.
+    /// If it is reached, the scanner will produce only `Token::Eof`.
     fn at_eof(&self) -> bool;
 
-    /// Extracts and returns the next token from the stream. Returns `Token::EOF`
+    /// Extracts and returns the next token from the stream. Returns `Token::Eof`
     /// if the end of stream has been reached and no more tokens are available.
     fn next_token(&mut self) -> ScannedToken;
 }
@@ -175,7 +175,7 @@ impl<'a> StringScanner<'a> {
     fn next(&mut self) -> ScannedToken {
         if self.at_eof() {
             return ScannedToken {
-                tok: Token::EOF,
+                tok: Token::Eof,
                 span: Span::new(self.pos, self.pos)
             };
         }
@@ -184,7 +184,7 @@ impl<'a> StringScanner<'a> {
         let tok = self.scan_token();
         let end = self.prev_pos;
 
-        assert!(tok != Token::EOF);
+        assert!(tok != Token::Eof);
 
         return ScannedToken {
             tok: tok,
@@ -4535,7 +4535,7 @@ mod tests {
             bytes += s.len();
         }
 
-        all_tok.push(ScannedToken { tok: Token::EOF, span: Span::new(bytes, bytes) });
+        all_tok.push(ScannedToken { tok: Token::Eof, span: Span::new(bytes, bytes) });
 
         return (all_str, all_tok);
     }
@@ -4556,7 +4556,7 @@ mod tests {
 
             tokens.push(token.clone());
 
-            if token.tok == Token::EOF {
+            if token.tok == Token::Eof {
                 break;
             }
         }
