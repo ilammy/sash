@@ -767,8 +767,8 @@ impl<'a> StringScanner<'a> {
                 return Ok('\n');
             }
             Some('\r') if self.peek_is('\n') => {
-                self.read(); // TODO: this may cause issues if read() is taught to skip over
-                self.read(); //       Windows line endings as a single character
+                self.read();
+                self.read();
                 return Ok('\n');
             }
             // Strings are correctly terminated by a double quote character. But they may also
@@ -2327,8 +2327,6 @@ mod tests {
         }
     }
 
-    // TODO: combined errors
-
     #[test]
     fn integer_type_suffixes() {
         check! {
@@ -2529,8 +2527,6 @@ mod tests {
         }
     }
 
-    // TODO: combined errors
-
     #[test]
     fn float_type_suffixes() {
         check! {
@@ -2727,16 +2723,6 @@ mod tests {
         }
     }
 
-    // We adopt a simple heuristic for the case of missing closing quotes in character literals.
-    // If we see a quote on the same line then our incorrect multi-character literal spans between
-    // these quotes (it may mean a string with incorrect quotes). If we find no quotes on the line
-    // then maybe the quote character is missing after that single character we saw, or maybe that
-    // first quote is erroneously placed, or maybe there are several incorrect characters here.
-    // As with strings, it's better to not try to guess the meaning of arbitrary invalid sequences.
-    // We do not backtrack so we just eat everything up to the line end as an unrecognized token.
-    //
-    // TODO: shouldn't this be placed near the code that does this? the tests could xref to it.
-
     #[test]
     fn character_multicharacter_literals() {
         check! {
@@ -2835,13 +2821,6 @@ mod tests {
             (1, 3), (6, 9), (12, 17), (22, 24);
         }
     }
-
-    // A similar heuristic is used for missing curly braces.
-    // If character termination quote is seen before a brace, the brace is inserted.
-    // If no character termination quote is found until the line ending, the whole literal
-    // is considered unrecognized token with an error message about missing brace.
-    //
-    // TODO: the same as earlier
 
     #[test]
     fn character_incorrect_unicode_braces() {
@@ -3245,8 +3224,6 @@ mod tests {
         }
     }
 
-    // TODO: more tests
-
     #[test]
     fn string_type_suffixes() {
         check! {
@@ -3426,10 +3403,6 @@ mod tests {
             ( 4,  5), (16, 17), (26, 27), (27, 28), (28, 29);
         }
     }
-
-    // TODO: more tests?
-    //       Like, unrecognized starts of raw strings, "r#####foo"?
-    //       However, maybe these should be parsed as invalid multipart identifiers.
 
     #[test]
     fn raw_string_type_suffixes() {
@@ -4202,8 +4175,6 @@ mod tests {
             ("r#\"awr\"#"       => Literal(RawString, "awr"));
         }
     }
-
-    // TODO: boundary tests between all token types
 
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     // Symbols
