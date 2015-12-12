@@ -13,5 +13,6 @@
 extern crate unicode;
 
 pub mod diagnostics;
+pub mod intern_pool;
 pub mod lexer;
 pub mod tokens;

@@ -8,6 +8,8 @@
 //!
 //! This module contains definitions of various tokens recognized and processed by Sash parser.
 
+use intern_pool::Atom;
+
 /// Types of tokens recognized by the scanner.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Token {
@@ -21,25 +23,13 @@ pub enum Token {
     Comment,
 
     /// Documentation comment.
-    DocComment,
+    DocComment(Atom),
 
-    /// Left (opening) parenthesis `(`.
-    Lparen,
+    /// An opening (left) delimiter.
+    OpenDelim(Delimiter),
 
-    /// Right (closing) parenthesis `)`.
-    Rparen,
-
-    /// Left (opening) bracket `[`.
-    Lbrack,
-
-    /// Right (closing) bracket `]`.
-    Rbrack,
-
-    /// Left (opening) brace `{`.
-    Lbrace,
-
-    /// Right (closing) brace `}`.
-    Rbrace,
+    /// A closing (right) delimiter.
+    CloseDelim(Delimiter),
 
     /// Dot `.`.
     Dot,
@@ -59,30 +49,50 @@ pub enum Token {
     /// Hash `#`.
     Hash,
 
-    /// An integer literal.
-    Integer,
-
-    /// A floating-point literal.
-    Float,
-
-    /// A single character.
-    Character,
-
-    /// A string of characters.
-    String,
-
-    /// A raw string of characters.
-    RawString,
+    /// A literal value.
+    Literal(Lit, Option<Atom>),
 
     /// An identifier (of any kind).
-    Identifier,
+    Identifier(Atom),
 
     /// An implicit symbol.
-    ImplicitSymbol,
+    ImplicitSymbol(Atom),
 
     /// An explicit symbol.
-    ExplicitSymbol,
+    ExplicitSymbol(Atom),
 
     /// Marker token denoting invalid character sequences.
     Unrecognized,
+}
+
+/// Delimiter type.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Delimiter {
+    /// Parentheses `( )`.
+    Paren,
+
+    /// Brackets `[ ]`.
+    Bracket,
+
+    /// Braces `{ }`.
+    Brace,
+}
+
+/// Literal token type.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Lit {
+    /// An integer literal.
+    Integer(Atom),
+
+    /// A floating-point literal.
+    Float(Atom),
+
+    /// A single character.
+    Character(Atom),
+
+    /// A string of characters.
+    String(Atom),
+
+    /// A raw string of characters.
+    RawString(Atom),
 }
