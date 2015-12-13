@@ -43,10 +43,10 @@ pub struct ScannedToken {
 /// However, a scanner will never reconsider its decisions about what it saw and where it was.
 pub trait Scanner {
     /// Checks whether the end of token stream has been reached.
-    /// If it is reached, the scanner will produce only `Token::EOF`.
+    /// If it is reached, the scanner will produce only `Token::Eof`.
     fn at_eof(&self) -> bool;
 
-    /// Extracts and returns the next token from the stream. Returns `Token::EOF`
+    /// Extracts and returns the next token from the stream. Returns `Token::Eof`
     /// if the end of stream has been reached and no more tokens are available.
     fn next_token(&mut self) -> ScannedToken;
 }
@@ -82,16 +82,6 @@ pub struct StringScanner<'a> {
     prev_pos: usize,
 
     //
-    // Temporaries for the token currently being scanned
-    //
-
-    /// First character of `tok`.
-    start: usize,
-
-    /// Last character of `tok`.
-    end: usize,
-
-    //
     // Diagnostic reporting
     //
 
@@ -117,7 +107,6 @@ impl<'a> StringScanner<'a> {
             buf: s,
             pool: pool,
             cur: None, pos: 0, prev_pos: 0,
-            start: 0, end: 0,
             report: reporter,
         };
         scanner.read();
@@ -186,20 +175,20 @@ impl<'a> StringScanner<'a> {
     fn next(&mut self) -> ScannedToken {
         if self.at_eof() {
             return ScannedToken {
-                tok: Token::EOF,
+                tok: Token::Eof,
                 span: Span::new(self.pos, self.pos)
             };
         }
 
-        self.start = self.prev_pos;
+        let start = self.prev_pos;
         let tok = self.scan_token();
-        self.end = self.prev_pos;
+        let end = self.prev_pos;
 
-        assert!(tok != Token::EOF);
+        assert!(tok != Token::Eof);
 
         return ScannedToken {
             tok: tok,
-            span: Span::new(self.start, self.end)
+            span: Span::new(start, end)
         };
     }
 
@@ -283,6 +272,8 @@ impl<'a> StringScanner<'a> {
 
     /// Scan over a line comment.
     fn scan_line_comment(&mut self) -> Token {
+        let comment_start = self.prev_pos;
+
         // Line comments start with two consecutive slashes
         self.expect_and_skip("//");
 
@@ -310,13 +301,17 @@ impl<'a> StringScanner<'a> {
             }
         }
 
+        let comment_end = self.prev_pos;
+
         return if doc_comment {
-            Token::DocComment(self.intern_slice(self.start, self.prev_pos))
+            Token::DocComment(self.intern_slice(comment_start, comment_end))
         } else { Token::Comment };
     }
 
     /// Scan a block comment.
     fn scan_block_comment(&mut self) -> Token {
+        let comment_start = self.prev_pos;
+
         // Block comments start with a slash followed by an asterisk
         self.expect_and_skip("/*");
 
@@ -356,12 +351,14 @@ impl<'a> StringScanner<'a> {
             }
         }
 
+        let comment_end = self.prev_pos;
+
         if nesting_level > 0 {
             if doc_comment {
-                self.report.fatal(Span::new(self.start, self.prev_pos),
+                self.report.fatal(Span::new(comment_start, comment_end),
                     "unterminated block comment, expected '*/'");
             } else {
-                self.report.fatal(Span::new(self.start, self.prev_pos),
+                self.report.fatal(Span::new(comment_start, comment_end),
                     "unterminated documentation comment, expected '*/'");
             }
 
@@ -369,12 +366,14 @@ impl<'a> StringScanner<'a> {
         }
 
         return if doc_comment {
-            Token::DocComment(self.intern_slice(self.start, self.prev_pos))
+            Token::DocComment(self.intern_slice(comment_start, comment_end))
         } else { Token::Comment };
     }
 
     /// Scan over any number literal.
     fn scan_number(&mut self) -> Token {
+        let number_start = self.prev_pos;
+
         // Okay, first of all, numbers start with a decimal digit
         assert!(is_digit(self.cur.unwrap(), 10));
 
@@ -399,7 +398,7 @@ impl<'a> StringScanner<'a> {
 
         // The integer part may contain no digits, like in "0x__"
         if digits == 0 {
-            self.report.error(Span::new(self.start, self.prev_pos),
+            self.report.error(Span::new(number_start, self.prev_pos),
                 "number contains no digits");
         }
 
@@ -419,7 +418,7 @@ impl<'a> StringScanner<'a> {
                 // Else it is just an integer followed by some dot. While dots can form identifiers
                 // (like '...'), type suffixes are defined as word-identifiers, which dots aren't.
                 // Thus we just go out with the suffixless integer we have already scanned over.
-                let literal = self.intern_slice(self.start, self.prev_pos);
+                let literal = self.intern_slice(number_start, self.prev_pos);
                 return Token::Literal(Lit::Integer(literal), None);
             }
         }
@@ -452,15 +451,17 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        let literal = self.intern_slice(self.start, self.prev_pos);
-
-        let suffix = self.scan_optional_type_suffix();
+        let number_end = self.prev_pos;
 
         // Some late check for floating-point base. We do not support binary literals for floats.
         if !integer && (base != 10) {
-            self.report.error(Span::new(self.start, self.prev_pos),
+            self.report.error(Span::new(number_start, number_end),
                 "only decimal base is supported for floating-point numbers");
         }
+
+        let literal = self.intern_slice(number_start, number_end);
+
+        let suffix = self.scan_optional_type_suffix();
 
         return Token::Literal(if integer {
             Lit::Integer(literal)
@@ -537,6 +538,8 @@ impl<'a> StringScanner<'a> {
     fn scan_character_literal(&mut self) -> Token {
         use self::CharacterSpecials::{SingleQuote, UnexpectedTerminator};
 
+        let char_start = self.prev_pos;
+
         // A character literal is a single quote...
         self.expect_and_skip("\'");
 
@@ -565,7 +568,7 @@ impl<'a> StringScanner<'a> {
                                 // We have seen a closing quote on the same line, stop scanning
                                 Err(SingleQuote) => {
                                     self.read();
-                                    self.report.error(Span::new(self.start, self.prev_pos),
+                                    self.report.error(Span::new(char_start, self.prev_pos),
                                         "more than one character in a character constant");
                                     break;
                                 }
@@ -593,7 +596,7 @@ impl<'a> StringScanner<'a> {
                     self.read();
                     Some('\'')
                 } else {
-                    self.report.error(Span::new(self.start, self.prev_pos),
+                    self.report.error(Span::new(char_start, self.prev_pos),
                         "missing character in a character constant");
                     Some(REPLACEMENT_CHARACTER)
                 }
@@ -608,7 +611,7 @@ impl<'a> StringScanner<'a> {
                 return Token::Literal(Lit::Character(self.intern_string(c.to_string())), suffix);
             }
             None => {
-                self.report.fatal(Span::new(self.start, self.prev_pos),
+                self.report.fatal(Span::new(char_start, self.prev_pos),
                     "unterminated character constant, expected a closing single quote (')");
 
                 return Token::Unrecognized;
@@ -619,6 +622,8 @@ impl<'a> StringScanner<'a> {
     /// Scan over a string literal.
     fn scan_string(&mut self) -> Token {
         use self::StringSpecials::{DoubleQuote, SkippedEscapedLineEnding, UnexpectedTerminator};
+
+        let string_start = self.prev_pos;
 
         // Strings start with a double quote...
         self.expect_and_skip("\"");
@@ -641,7 +646,7 @@ impl<'a> StringScanner<'a> {
                 // But things go wrong sometimes and the string may not be terminated
                 Err(UnexpectedTerminator) => {
                     // For strings there is only one way to get here: end of the stream
-                    self.report.fatal(Span::new(self.start, self.prev_pos),
+                    self.report.fatal(Span::new(string_start, self.prev_pos),
                         "unterminated string, expected a closing double quote (\")");
 
                     return Token::Unrecognized;
@@ -657,6 +662,8 @@ impl<'a> StringScanner<'a> {
     /// Scan over an explicit symbol.
     fn scan_explicit_symbol(&mut self) -> Token {
         use self::SymbolSpecials::{Backquote, UnexpectedTerminator};
+
+        let symbol_start = self.prev_pos;
 
         // Symbols start with a backquote...
         self.expect_and_skip("`");
@@ -676,7 +683,7 @@ impl<'a> StringScanner<'a> {
                 }
                 // But things go wrong sometimes and the symbol may not be terminated
                 Err(UnexpectedTerminator) => {
-                    self.report.fatal(Span::new(self.start, self.prev_pos),
+                    self.report.fatal(Span::new(symbol_start, self.prev_pos),
                         "unterminated symbol name, expected a closing backquote (`)");
 
                     return Token::Unrecognized;
@@ -760,8 +767,8 @@ impl<'a> StringScanner<'a> {
                 return Ok('\n');
             }
             Some('\r') if self.peek_is('\n') => {
-                self.read(); // TODO: this may cause issues if read() is taught to skip over
-                self.read(); //       Windows line endings as a single character
+                self.read();
+                self.read();
                 return Ok('\n');
             }
             // Strings are correctly terminated by a double quote character. But they may also
@@ -1320,6 +1327,8 @@ impl<'a> StringScanner<'a> {
 
     /// Scan over a raw string delimited by `hash_count` hashes.
     fn scan_raw_string(&mut self, hash_count: u32) -> Token {
+        let string_start = self.prev_pos - (hash_count as usize) - 1; // unwind leading `r#...#`
+
         // Raw string content starts with an double quote
         self.expect_and_skip("\"");
 
@@ -1350,7 +1359,7 @@ impl<'a> StringScanner<'a> {
                     self.read();
                 }
                 None => {
-                    self.report.fatal(Span::new(self.start, self.prev_pos),
+                    self.report.fatal(Span::new(string_start, self.prev_pos),
                         match hash_count {
                             0 => format!("unterminated raw string, expected a double quote (\")"),
                             1 => format!("unterminated raw string, expected a double quote \
@@ -1406,6 +1415,8 @@ impl<'a> StringScanner<'a> {
         use self::IdentifierSpecials::{Terminator, Dot, Digit, IncorrectUnicodeEscape,
             AsciiUnicodeEscape};
 
+        let identifier_start = self.prev_pos;
+
         // Look at the first character to decide what kind of identifier we're up to
         match self.scan_one_character_of_identifier() {
             Ok(c) => {
@@ -1425,11 +1436,11 @@ impl<'a> StringScanner<'a> {
                 // Otherwise, skip over this incomprehensible character sequence until we see
                 // something meaninful. We *can* go here as scan_identifier() is called by the
                 // catch-all branch of the next() method.
-                return self.scan_unrecognized();
+                return self.scan_unrecognized(identifier_start);
             }
             // Ignore invalid Unicode escapes as well
             Err(IncorrectUnicodeEscape) | Err(AsciiUnicodeEscape) => {
-                return self.scan_unrecognized();
+                return self.scan_unrecognized(identifier_start);
             }
             // In this context, a dot must be followed by another dot, meaning a mark identifier.
             // Token::Dot should have been handled by next() before.
@@ -1443,7 +1454,7 @@ impl<'a> StringScanner<'a> {
     }
 
     /// Scan over a sequence of unrecognized characters.
-    fn scan_unrecognized(&mut self) -> Token {
+    fn scan_unrecognized(&mut self, mayhem_start: usize) -> Token {
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, MARK_START, QUOTE_START};
         use self::IdentifierSpecials::{Terminator, Dot, Digit, IncorrectUnicodeEscape,
@@ -1469,7 +1480,7 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        self.report.error(Span::new(self.start, self.prev_pos),
+        self.report.error(Span::new(mayhem_start, self.prev_pos),
             "incomprehensible character sequence");
 
         return Token::Unrecognized;
@@ -2316,8 +2327,6 @@ mod tests {
         }
     }
 
-    // TODO: combined errors
-
     #[test]
     fn integer_type_suffixes() {
         check! {
@@ -2518,8 +2527,6 @@ mod tests {
         }
     }
 
-    // TODO: combined errors
-
     #[test]
     fn float_type_suffixes() {
         check! {
@@ -2716,16 +2723,6 @@ mod tests {
         }
     }
 
-    // We adopt a simple heuristic for the case of missing closing quotes in character literals.
-    // If we see a quote on the same line then our incorrect multi-character literal spans between
-    // these quotes (it may mean a string with incorrect quotes). If we find no quotes on the line
-    // then maybe the quote character is missing after that single character we saw, or maybe that
-    // first quote is erroneously placed, or maybe there are several incorrect characters here.
-    // As with strings, it's better to not try to guess the meaning of arbitrary invalid sequences.
-    // We do not backtrack so we just eat everything up to the line end as an unrecognized token.
-    //
-    // TODO: shouldn't this be placed near the code that does this? the tests could xref to it.
-
     #[test]
     fn character_multicharacter_literals() {
         check! {
@@ -2824,13 +2821,6 @@ mod tests {
             (1, 3), (6, 9), (12, 17), (22, 24);
         }
     }
-
-    // A similar heuristic is used for missing curly braces.
-    // If character termination quote is seen before a brace, the brace is inserted.
-    // If no character termination quote is found until the line ending, the whole literal
-    // is considered unrecognized token with an error message about missing brace.
-    //
-    // TODO: the same as earlier
 
     #[test]
     fn character_incorrect_unicode_braces() {
@@ -3234,8 +3224,6 @@ mod tests {
         }
     }
 
-    // TODO: more tests
-
     #[test]
     fn string_type_suffixes() {
         check! {
@@ -3415,10 +3403,6 @@ mod tests {
             ( 4,  5), (16, 17), (26, 27), (27, 28), (28, 29);
         }
     }
-
-    // TODO: more tests?
-    //       Like, unrecognized starts of raw strings, "r#####foo"?
-    //       However, maybe these should be parsed as invalid multipart identifiers.
 
     #[test]
     fn raw_string_type_suffixes() {
@@ -4192,8 +4176,6 @@ mod tests {
         }
     }
 
-    // TODO: boundary tests between all token types
-
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     // Symbols
 
@@ -4553,7 +4535,7 @@ mod tests {
             bytes += s.len();
         }
 
-        all_tok.push(ScannedToken { tok: Token::EOF, span: Span::new(bytes, bytes) });
+        all_tok.push(ScannedToken { tok: Token::Eof, span: Span::new(bytes, bytes) });
 
         return (all_str, all_tok);
     }
@@ -4574,7 +4556,7 @@ mod tests {
 
             tokens.push(token.clone());
 
-            if token.tok == Token::EOF {
+            if token.tok == Token::Eof {
                 break;
             }
         }
