@@ -1286,9 +1286,6 @@ impl<'a> StringScanner<'a> {
         }
 
         // At this point we have ensured that `value` *is* a valid Unicode scalar value
-        assert!((value <= 0x10FFFF) && !((0xD800 <= value) && (value <= 0xDFFF)));
-
-        // TODO: Replace this with std::char::from_u32_unchecked() when it is stabilized
         return Some(char::from_u32(value).unwrap());
     }
 
