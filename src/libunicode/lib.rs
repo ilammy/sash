@@ -16,3 +16,5 @@ mod tables;
 
 pub use tables::UNICODE_VERSION;
 pub use tables::sash_identifiers;
+
+pub mod normalization;
