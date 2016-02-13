@@ -32,6 +32,15 @@ commandline.add_argument('--compare',
     help='Compare derived identifier sets for the given pair of standards. \
           Report any changes and conflicts caused by migration between them.')
 
+commandline.add_argument('--output',
+    nargs=1,
+    metavar='what',
+    type=str,
+    default=['tables'],
+    help='Select what data to output. Supported choices are "tables" and \
+          "normalization_conformance". If this option is not specified then \
+          "tables" is assumed.')
+
 commandline_args = commandline.parse_args()
 
 def report_status(s):
@@ -200,15 +209,14 @@ def parse_normalization_tests(data, assigned_codepoints):
             test_part.append(c)
         test_parts.append(test_part)
 
-    # Part 1 is special, it implies that every codepoint *not* enumerated there is normalized into itself
-    additional_test = []
-    chars_in_part1 = set(map(lambda test: test[0][0], test_parts[1]))
-    for c in assigned_codepoints:
-        if c not in chars_in_part1:
-            additional_test.append(([c], [c], [c], [c], [c]))
-    test_parts.append(additional_test)
+    nontrivial = [test for test_part in test_parts for test in test_part]
 
-    return [test for test_part in test_parts for test in test_part]
+    chars_in_part1 = set(map(lambda test: test[0][0], test_parts[1]))
+    trivial = [c for c in assigned_codepoints
+                 if c not in chars_in_part1
+                 and ((c < 0xD800) or (0xDFFF < c))]
+
+    return nontrivial, trivial
 
 def parse_property_list(data):
     """Extract special properties from PropList.txt"""
@@ -513,9 +521,13 @@ def compute_jamo_decompositions(ucd):
 # Normalization tests
 #
 
-def run_normalization_tests(ucd, normalization_tests):
+def run_normalization_tests(ucd, nontrivial_tests, trivial_tests):
     """Run normalization self-tests from NormalizationTest.txt"""
-    for c1, c2, c3, c4, c5 in normalization_tests:
+    report_status('Running normalization self-tests...')
+
+    test_set = nontrivial_tests + [([c], [c], [c], [c], [c]) for c in trivial_tests]
+
+    for c1, c2, c3, c4, c5 in test_set:
         # NFC
         assert c2 == nfc(ucd, c1)
         assert c2 == nfc(ucd, c2)
@@ -566,7 +578,8 @@ def prepare_unicode_character_data(version):
     hangul_syllable_types = parse_hangul_syllable_types(HangulSyllableType)
     composition_exclusions = parse_composition_exclusions(CompositionExclusions)
     properties = parse_property_list(PropList)
-    normalization_tests = parse_normalization_tests(NormalizationTest, assigned_codepoints)
+    [normalization_tests_nontrivial,
+     normalization_tests_trivial] = parse_normalization_tests(NormalizationTest, assigned_codepoints)
 
     report_status('Precomputing derived properties and decompositions...')
 
@@ -588,8 +601,10 @@ def prepare_unicode_character_data(version):
     ucd.version          = version
     ucd.names            = names
 
-    report_status('Running normalization self-tests...')
-    run_normalization_tests(ucd, normalization_tests)
+    ucd.normalization_tests_nontrivial = normalization_tests_nontrivial
+    ucd.normalization_tests_trivial = normalization_tests_trivial
+
+    run_normalization_tests(ucd, normalization_tests_nontrivial, normalization_tests_trivial)
 
     return ucd
 
@@ -1061,11 +1076,11 @@ def emit_category_table_ascii(categories):
     print_data(split_into_lines(map(render, cats), separator=',', indent=8, max_length=99))
 
 def emit_category_table_unicode(categories):
-    table = convert_to_bsearch_table(categories)
-    table = filter(lambda range: range[2] != 0, table)
+    table = pack_character_ranges(dict(enumerate(categories)))
+    table = filter(lambda range: range[1] != 0, table)
 
     def render(range):
-        low, high, cat = range
+        (low, high), cat = range
         return "('\\u{%04X}', '\\u{%04X}', %2d)" % (low, high, cat)
 
     print_data(split_into_lines(map(render, table), separator=',', indent=8, max_length=99))
@@ -1087,24 +1102,119 @@ def split_into_lines(seq, separator, indent, max_length):
 
     return '\n'.join(map(lambda s: s.rstrip(), lines))
 
-def convert_to_bsearch_table(categories):
+def pack_character_ranges(mapping):
     table = []
 
     start, end, current = None, None, None
 
-    for c, cat in enumerate(categories):
+    for c in xrange(0, 0x110000):
+        v = mapping.get(c, None)
+
         if start is None:
-            start, end, current = c, c, cat
-        elif cat == current:
+            start, end, current = c, c, v
+        elif v == current:
             end = c
         else:
-            table.append((start, end, current))
-            start, end, current = c, c, cat
+            table.append(((start, end), current))
+            start, end, current = c, c, v
 
     if start is not None:
-        table.append((start, end, current))
+        table.append(((start, end), current))
 
     return table
+
+def emit_normalization_tests(ucd):
+    print_data("""\
+// Copyright (c) 2016, ilammy
+//
+// Licensed under MIT license (see LICENSE file in the root directory).
+// This file may be copied, distributed, and modified only in accordance
+// with the terms specified by this license.
+
+//
+// THIS FILE IS AUTOMATICALLY GENERATED. DO NOT EDIT IT DIRECTLY. PLEASE.
+//
+
+//! Unicode normalization tests.
+//!
+//! This module contains normalization self-tests based on NormalizationTest.txt from UCD.
+
+extern crate unicode;
+
+use std::char;
+use std::string::ToString;
+use unicode::normalization;
+
+#[test]
+fn conformance_1() {
+    for &(s1, s2, s3, s4, s5) in EXPLICIT_STRINGS {
+        assert_eq!(s2, normalization::nfc(s1));
+        assert_eq!(s2, normalization::nfc(s2));
+        assert_eq!(s2, normalization::nfc(s3));
+        assert_eq!(s4, normalization::nfc(s4));
+        assert_eq!(s4, normalization::nfc(s5));
+
+        assert_eq!(s3, normalization::nfd(s1));
+        assert_eq!(s3, normalization::nfd(s2));
+        assert_eq!(s3, normalization::nfd(s3));
+        assert_eq!(s5, normalization::nfd(s4));
+        assert_eq!(s5, normalization::nfd(s5));
+
+        assert_eq!(s4, normalization::nfkc(s1));
+        assert_eq!(s4, normalization::nfkc(s2));
+        assert_eq!(s4, normalization::nfkc(s3));
+        assert_eq!(s4, normalization::nfkc(s4));
+        assert_eq!(s4, normalization::nfkc(s5));
+
+        assert_eq!(s5, normalization::nfkd(s1));
+        assert_eq!(s5, normalization::nfkd(s2));
+        assert_eq!(s5, normalization::nfkd(s3));
+        assert_eq!(s5, normalization::nfkd(s4));
+        assert_eq!(s5, normalization::nfkd(s5));
+    }
+}
+
+#[test]
+fn conformance_2() {
+    for &(from, to) in TRIVIAL_RANGES {
+        for n in (from as u32)..(to as u32 + 1) {
+            let c = char::from_u32(n).unwrap();
+            let s = &c.to_string()[..];
+
+            assert_eq!(s, normalization::nfc(s));
+            assert_eq!(s, normalization::nfd(s));
+            assert_eq!(s, normalization::nfkc(s));
+            assert_eq!(s, normalization::nfkd(s));
+        }
+    }
+}
+
+const EXPLICIT_STRINGS: &'static [(&'static str, &'static str, &'static str, &'static str, &'static str)] = &[
+""")
+    def render_string(s):
+        return '"' + ''.join(map(lambda c: '\\u{%04X}' % c, s)) + '"'
+
+    for s1, s2, s3, s4, s5 in ucd.normalization_tests_nontrivial:
+        print_data("    (%s, %s, %s, %s, %s),\n" % tuple(map(render_string, [s1, s2, s3, s4, s5])))
+
+    print_data("""
+];
+
+const TRIVIAL_RANGES: &'static [(char, char)] = &[
+""")
+
+    table = pack_character_ranges({c: True for c in ucd.normalization_tests_trivial})
+    table = filter(lambda r: r[1] is True, table)
+
+    def render_range(r):
+        (low, high), _ = r
+        return "('\\u{%04X}', '\\u{%04X}')" % (low, high)
+
+    print_data(split_into_lines(map(render_range, table), separator=',', indent=4, max_length=99))
+
+    print_data("""
+];
+""")
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 #
@@ -1157,6 +1267,13 @@ if commandline_args.compare:
     if perfect_sets:
         report_status('All character sets are fine.')
 else:
+    # Checking output type
+    output = commandline_args.output[-1]
+    if output not in ['tables', 'normalization_conformance']:
+        report_status('')
+        report_status("Unknown --output option: %s" % output)
+        sys.exit(-1)
+
     # Generating tables for a given version
     if commandline_args.version == 'latest':
         version = latest_version
@@ -1165,6 +1282,10 @@ else:
 
     ucd = get_unicode_character_data(version)
 
-    cs = compute_character_sets(ucd)
+    if output == 'tables':
+        cs = compute_character_sets(ucd)
 
-    emit_unicode_tables(cs)
+        emit_unicode_tables(cs)
+
+    if output == 'normalization_conformance':
+        emit_normalization_tests(ucd)
