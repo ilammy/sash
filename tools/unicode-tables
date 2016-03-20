@@ -1190,7 +1190,7 @@ pub mod composition_mappings {
     ///
     /// This function does not include support for precomposed Hangul syllables (D132),
     /// they must be computed programmatically.
-    pub fn primary(c1: char, c2: char) -> Option<char> {
+    pub fn primary(c1: char, c2: char) -> Option<(char, u8)> {
         PRIMARY_COMPOSITION_MAPPING
             .binary_search_by(|&(p1, p2, _)| {
                 use std::cmp::Ordering;
@@ -1205,19 +1205,21 @@ pub mod composition_mappings {
 
     /// Lookup table for `primary()` containing all Primary Composite mappings expect for
     /// precomposed Hangul syllables.
-    const PRIMARY_COMPOSITION_MAPPING: &'static [(char, char, char)] = &[
+    const PRIMARY_COMPOSITION_MAPPING: &'static [(char, char, (char, u8))] = &[
 """)
-    emit_primary_composites(primary_composites)
+    emit_primary_composites(ucd, primary_composites)
     print_data("""
     ];
 }
 """)
 
-def emit_primary_composites(composites):
+def emit_primary_composites(ucd, composites):
     composites = sorted(composites)
 
     def render(composite):
-        return "('\\u{%04X}', '\\u{%04X}', '\\u{%04X}')" % composite
+        c1, c2, c3 = composite
+        ccc = ucd.canonical_combining_class.get(c3, 0)
+        return "('\\u{%04X}', '\\u{%04X}', ('\\u{%04X}', %d))" % (c1, c2, c3, ccc)
 
     print_data(split_into_lines(map(render, composites), separator=',', indent=8, max_length=99))
 
@@ -1231,7 +1233,7 @@ def emit_decomposition_mappings(ucd):
 /// of Unicode normalization algorithms.
 pub mod decomposition_mappings {
     /// Get full canonical decomposition of character `c`.
-    pub fn canonical_mapping(c: char) -> Option<&'static [char]> {
+    pub fn canonical_mapping(c: char) -> Option<&'static [(char, u8)]> {
         CANONICAL_MAPPINGS
             .binary_search_by(|&(probe, _)| probe.cmp(&c))
             .ok()
@@ -1239,7 +1241,7 @@ pub mod decomposition_mappings {
     }
 
     /// Get full compatibility decomposition of character `c`.
-    pub fn compatibility_mapping(c: char) -> Option<&'static [char]> {
+    pub fn compatibility_mapping(c: char) -> Option<&'static [(char, u8)]> {
         COMPATIBILITY_MAPPINGS
             .binary_search_by(|&(probe, _)| probe.cmp(&c))
             .ok()
@@ -1247,16 +1249,16 @@ pub mod decomposition_mappings {
     }
 
     /// Lookup table for `canonical_mapping()`.
-    const CANONICAL_MAPPINGS: &'static [(char, &'static [char])] = &[
+    const CANONICAL_MAPPINGS: &'static [(char, &'static [(char, u8)])] = &[
 """)
-    emit_decomposition_table(canonical)
+    emit_decomposition_table(ucd, canonical)
     print_data("""
     ];
 
     /// Lookup table for `compatibility_mapping()`.
-    const COMPATIBILITY_MAPPINGS: &'static [(char, &'static [char])] = &[
+    const COMPATIBILITY_MAPPINGS: &'static [(char, &'static [(char, u8)])] = &[
 """)
-    emit_decomposition_table(compatibility)
+    emit_decomposition_table(ucd, compatibility)
     print_data("""
     ];
 }
@@ -1269,12 +1271,16 @@ def compute_full_decompositions(ucd):
              for c in sorted(ucd.canonical_decompositions.keys()
                            + ucd.compatibility_decompositions.keys())])
 
-def emit_decomposition_table(table):
+def emit_decomposition_table(ucd, table):
     def render_char(c):
         return "'\\u{%04X}'" % c
 
+    def render_char_with_ccc(c):
+        ccc = ucd.canonical_combining_class.get(c, 0)
+        return "('\\u{%04X}', %d)" % (c, ccc)
+
     def render_decomposition(decomposition):
-        return '&[' + ', '.join(map(render_char, decomposition)) + ']'
+        return '&[' + ', '.join(map(render_char_with_ccc, decomposition)) + ']'
 
     def render_entry(entry):
         c, decomposition = entry
