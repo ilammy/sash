@@ -219,20 +219,45 @@ fn compose_hangul(c1: char, c2: char) -> Option<(char, u8)> {
 // Canonical Ordering Algorithm
 //
 
-/// Check whether adjacent characters form a Reorderable pair (D108).
-fn reorderable_pair(a: (char, u8), b: (char, u8)) -> bool {
-    (a.1 > b.1) && (b.1 > 0)
-}
-
 /// Apply the Canonical Ordering Algorithm (D109) to a character slice.
 fn reorder_canonically(slice: &mut [(char, u8)]) {
-    // Bubble sort, yay!
-    for lim in (1..slice.len()).rev() {
-        for i in 0..lim {
-            if reorderable_pair(slice[i], slice[i + 1]) {
-                slice.swap(i, i + 1);
+    // Actually, this is a bubble sort, but with one important detail: starter characters are never
+    // reordered. That is, we must sort only the grapheme clusters. Therefore we can replace O(n^2)
+    // bubble sort of the entire string with an O(n) pass over the clusters. Each grapheme cluster
+    // still takes O(n^2) time to sort. However, in this case 'n' is the length of the cluster,
+    // which is a small number in real-world texts (less than 10 in sane texts, usually 2..5).
+    // And usually the combining marks are almost sorted, so the bubble sort works just fine.
+
+    let len = slice.len();
+
+    let mut cur = 0;
+    while cur < len {
+        // Skip over sequences of starters. We are looking for non-starters.
+        if slice[cur].1 == 0 {
+            cur += 1;
+            continue;
+        }
+
+        // Now find the next starter so we know where to stop.
+        let mut next = cur + 1;
+        while next < len {
+            if slice[next].1 == 0 {
+                break;
+            }
+            next += 1;
+        }
+
+        // Apply bubble sort to the cluster.
+        for limit in (cur..next).rev() {
+            for i in cur..limit {
+                if slice[i].1 > slice[i + 1].1 {
+                    slice.swap(i, i + 1);
+                }
             }
         }
+
+        // We're done with this cluster, move on to the next one.
+        cur = next;
     }
 }
 
