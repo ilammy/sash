@@ -1127,12 +1127,64 @@ def pack_character_ranges(mapping):
 
     return table
 
+def convert_to_trie(mapping, factor):
+    stride = 2**factor
+    buckets = 0x110000 / stride
+
+    trie = [None] * buckets
+    for i in xrange(buckets):
+        bucket = [None] * stride
+        not_empty = False
+
+        for j in xrange(stride):
+            c = i * stride + j
+            if c in mapping:
+                bucket[j] = mapping[c]
+                not_empty = True
+
+        if not_empty:
+            trie[i] = bucket
+
+    return trie
+
+def optimize_trie_by_size(mapping, unpack, estimate_size, starting_factor):
+    def calculate_data(factor):
+        trie = convert_to_trie(mapping, factor)
+        data = unpack(trie, factor)
+        size = estimate_size(data)
+        return data, factor, size
+
+    def size(triple):
+        data, factor, size = triple
+        return size
+
+    factor = starting_factor
+    prev = calculate_data(factor - 1)
+    curr = calculate_data(factor)
+    next = calculate_data(factor + 1)
+
+    while not((size(prev) >= size(curr)) and (size(curr) <= size(next))):
+        if (size(prev) <= size(curr)) and (size(curr) <= size(next)):
+            factor -= 1
+            prev, curr, next = calculate_data(factor - 1), prev, curr
+        elif (size(prev) >= size(curr)) and (size(curr) >= size(next)):
+            factor += 1
+            prev, curr, next = curr, next, calculate_data(factor + 1)
+        else:
+            raise RuntimeError("Ugh, local maximum at factor %d" % factor)
+
+    return curr
+
 def emit_unicode_properties(ucd):
     emit_canonical_combining_class(ucd)
     emit_composition_mappings(ucd)
     emit_decomposition_mappings(ucd)
 
 def emit_canonical_combining_class(ucd):
+    report_status("\nOptimizing CCC trie...")
+    (indices, buckets), factor, size = optimize_ccc_trie(ucd.canonical_combining_class)
+    report_status("Done. Factor %d, estimated size %d KB" % (factor, size / 1024))
+
     print_data("""
 /// Unicode character properties.
 ///
@@ -1147,30 +1199,93 @@ pub mod properties {
     /// This is the _Canonical_Combining_Class_ property in the UCD. Its value is used in Canonical
     /// Ordering Algorithm and all over the Unicode normalization algorithms.
     pub fn canonical_combining_class(c: char) -> u8 {
-        CANONICAL_COMBINING_CLASS
-            .binary_search_by(|&(probe, _)| probe.cmp(&c))
-            .ok()
-            .map_or(0, |index| CANONICAL_COMBINING_CLASS[index].1)
+        // We are using a trie for CCC lookup.
+        //
+        //        unusued       index      offset
+        //      00000000000 0000000000110 01001111 = U+064F ARABIC DAMMA (CCC 31)
+        //                        |          |
+        //                        |          +-----------------------------+
+        //         +--------------+                                        |
+        //         |                                                       v
+        //         |                                       0              79              255
+        //         |    0 [ 0 ]                       0 [[ 0 ]                           [ 0 ]]
+        //         |
+        //         |    5 [ 3 ]                       3 [[ 0 ]     [ 0 ] [ 0 ] [ 0 ]     [ 0 ]]
+        //         +--> 6 [ 4 ] --------------------> 4 [[ 0 ]     [30 ] [31 ] [32 ]     [ 0 ]]
+        //              7 [ 5 ]                       5 [[ 0 ]     [ 0 ] [ 0 ] [ 0 ]     [ 0 ]]
+        //
+        //           8191 [ 0 ]                       N [[ 0 ]                           [ 0 ]]
+        //
+        // This is better than binary search as it needs less cache misses to acquire the value
+        // (exactly 2 vs. average 8). A hash table may be better as it needs only one cache miss,
+        // but it shows the same speed as the trie with perfect hashing. It is even slower due
+        // to conditionals if the hashing is not perfect. On the other hand, the trie is a simple
+        // stream of loads and arithmetics and it nicely handles the most common case of CCC zero.
+
+        let c = c as u32;
+
+        let index  = (c >> CCC_FACTOR) as usize;
+        let offset = (c & ((1 << CCC_FACTOR) - 1)) as usize;
+        let row    = CCC_INDICES[index] as usize;
+        let bucket = (row << CCC_FACTOR) + offset;
+
+        return CCC_BUCKETS[bucket];
     }
 
-    /// Lookup table for `canonical_combining_class()` containing data for characters with non-
-    /// zero canonical combining classes. All characters that are not included into this table
-    /// implictly have canonical combining class zero.
-    const CANONICAL_COMBINING_CLASS: &'static [(char, u8)] = &[
+    /// Length of trie suffix.
+    const CCC_FACTOR: u8 = %d;
+
+    /// Lookup table of indices.
+    const CCC_INDICES: &'static [u8] = &[
+""" % factor)
+    emit_ccc_indices(indices)
+    print_data("""
+    ];
+
+    /// Lookup table of bucket values.
+    const CCC_BUCKETS: &'static [u8] = &[
 """)
-    emit_ccc_values(ucd.canonical_combining_class)
+    emit_ccc_buckets(buckets)
     print_data("""
     ];
 }
 """)
 
-def emit_ccc_values(ccc):
-    ccc = sorted(ccc.iteritems())
+def optimize_ccc_trie(mapping):
+    def unpack(trie, factor):
+        indices = [0] * len(trie)
+        buckets = []
+        bucket_count = 0
 
-    def render(entry):
-        return "('\\u{%04X}', %3d)" % entry
+        for index, bucket in enumerate(trie):
+            if bucket:
+                buckets.extend(map(lambda ccc: ccc if ccc is not None else 0, bucket))
+                bucket_count += 1
+                indices[index] = bucket_count
 
-    print_data(split_into_lines(map(render, ccc), separator=',', indent=8, max_length=99))
+        # The default value for CCC is zero, so we can avoid using sentinel values and simply
+        # map all unassigned code points into the first bucket which will be full of zeros
+        buckets = [0] * (2**factor) + buckets
+
+        return indices, buckets
+
+    def estimate_size(unpacked):
+        indices, buckets = unpacked
+        return len(indices) + len(buckets)
+
+    return optimize_trie_by_size(mapping, unpack, estimate_size, starting_factor=8)
+
+def emit_ccc_indices(indices):
+    def render(index):
+        return '%2d' % index
+
+    print_data(split_into_lines(map(render, indices), separator=',', indent=8, max_length=99))
+
+def emit_ccc_buckets(buckets):
+    def render(ccc):
+        return '%3d' % ccc
+
+    print_data(split_into_lines(map(render, buckets), separator=',', indent=8, max_length=99))
 
 def emit_composition_mappings(ucd):
     primary_composites = filter(lambda m: m[2] not in ucd.precomposed_hangul_syllables,
