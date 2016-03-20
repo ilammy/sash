@@ -855,6 +855,7 @@ def emit_unicode_tables(cs):
     emit_header()
     emit_unicode_version(cs.ucd.version)
     emit_sash_identifiers(cs)
+    emit_unicode_properties(cs.ucd)
 
 def emit_header():
     print_data("""\
@@ -874,6 +875,9 @@ def emit_header():
 //! used by human-written code for actual algorithm implementation.
 //!
 //! - *sash_identifiers*: definitions of Sash identifier sets
+//! - *properties*: Unicode character properties
+//! - *composition_mappings*: composition mappings for normalization
+//! - *decomposition_mappings*: decomposition mappings for normalization
 """)
 
 def emit_unicode_version(version):
@@ -1122,6 +1126,161 @@ def pack_character_ranges(mapping):
         table.append(((start, end), current))
 
     return table
+
+def emit_unicode_properties(ucd):
+    emit_canonical_combining_class(ucd)
+    emit_composition_mappings(ucd)
+    emit_decomposition_mappings(ucd)
+
+def emit_canonical_combining_class(ucd):
+    print_data("""
+/// Unicode character properties.
+///
+/// This module contains definitions of various Unicode character properties. See [Unicode Standard
+/// Annex #44][UAX-44] for precise description of the Unicode character database and the properties
+/// it contains.
+///
+/// [UAX-44]: http://www.unicode.org/reports/tr44/
+pub mod properties {
+    /// Get canonical combining class of a character `c`.
+    ///
+    /// This is the _Canonical_Combining_Class_ property in the UCD. Its value is used in Canonical
+    /// Ordering Algorithm and all over the Unicode normalization algorithms.
+    pub fn canonical_combining_class(c: char) -> u8 {
+        CANONICAL_COMBINING_CLASS
+            .binary_search_by(|&(probe, _)| probe.cmp(&c))
+            .ok()
+            .map_or(0, |index| CANONICAL_COMBINING_CLASS[index].1)
+    }
+
+    /// Lookup table for `canonical_combining_class()` containing data for characters with non-
+    /// zero canonical combining classes. All characters that are not included into this table
+    /// implictly have canonical combining class zero.
+    const CANONICAL_COMBINING_CLASS: &'static [(char, u8)] = &[
+""")
+    emit_ccc_values(ucd.canonical_combining_class)
+    print_data("""
+    ];
+}
+""")
+
+def emit_ccc_values(ccc):
+    ccc = sorted(ccc.iteritems())
+
+    def render(entry):
+        return "('\\u{%04X}', %3d)" % entry
+
+    print_data(split_into_lines(map(render, ccc), separator=',', indent=8, max_length=99))
+
+def emit_composition_mappings(ucd):
+    primary_composites = filter(lambda m: m[2] not in ucd.precomposed_hangul_syllables,
+                                map(lambda m: (m[0][0], m[0][1], m[1]),
+                                    ucd.primary_composites.iteritems()))
+
+    print_data("""
+/// Composition mappings.
+///
+/// This module contains definitions of derived properties used during the composition stage
+/// of Unicode normalization algorithms.
+pub mod composition_mappings {
+    /// Get a primary composite of `c1` of `c2` if it exists.
+    ///
+    /// A Primary Composite (D114) is a Canonical Decomposable Character (D69) which is not
+    /// a Full Composition Exclusion (D113).
+    ///
+    /// This function does not include support for precomposed Hangul syllables (D132),
+    /// they must be computed programmatically.
+    pub fn primary(c1: char, c2: char) -> Option<char> {
+        PRIMARY_COMPOSITION_MAPPING
+            .binary_search_by(|&(p1, p2, _)| {
+                use std::cmp::Ordering;
+                match p1.cmp(&c1) {
+                    Ordering::Equal => p2.cmp(&c2),
+                    other => other,
+                }
+            })
+            .ok()
+            .map(|index| PRIMARY_COMPOSITION_MAPPING[index].2)
+    }
+
+    /// Lookup table for `primary()` containing all Primary Composite mappings expect for
+    /// precomposed Hangul syllables.
+    const PRIMARY_COMPOSITION_MAPPING: &'static [(char, char, char)] = &[
+""")
+    emit_primary_composites(primary_composites)
+    print_data("""
+    ];
+}
+""")
+
+def emit_primary_composites(composites):
+    composites = sorted(composites)
+
+    def render(composite):
+        return "('\\u{%04X}', '\\u{%04X}', '\\u{%04X}')" % composite
+
+    print_data(split_into_lines(map(render, composites), separator=',', indent=8, max_length=99))
+
+def emit_decomposition_mappings(ucd):
+    canonical, compatibility = compute_full_decompositions(ucd)
+
+    print_data("""
+/// Decomposition mappings.
+///
+/// This module contains definitions of derived properties used during the decomposition stage
+/// of Unicode normalization algorithms.
+pub mod decomposition_mappings {
+    /// Get full canonical decomposition of character `c`.
+    pub fn canonical_mapping(c: char) -> Option<&'static [char]> {
+        CANONICAL_MAPPINGS
+            .binary_search_by(|&(probe, _)| probe.cmp(&c))
+            .ok()
+            .map(|index| CANONICAL_MAPPINGS[index].1)
+    }
+
+    /// Get full compatibility decomposition of character `c`.
+    pub fn compatibility_mapping(c: char) -> Option<&'static [char]> {
+        COMPATIBILITY_MAPPINGS
+            .binary_search_by(|&(probe, _)| probe.cmp(&c))
+            .ok()
+            .map(|index| COMPATIBILITY_MAPPINGS[index].1)
+    }
+
+    /// Lookup table for `canonical_mapping()`.
+    const CANONICAL_MAPPINGS: &'static [(char, &'static [char])] = &[
+""")
+    emit_decomposition_table(canonical)
+    print_data("""
+    ];
+
+    /// Lookup table for `compatibility_mapping()`.
+    const COMPATIBILITY_MAPPINGS: &'static [(char, &'static [char])] = &[
+""")
+    emit_decomposition_table(compatibility)
+    print_data("""
+    ];
+}
+""")
+
+def compute_full_decompositions(ucd):
+    return ([(c, canonical_decomposition(ucd, [c]))
+             for c in sorted(ucd.canonical_decompositions.keys())],
+            [(c, compatibility_decomposition(ucd, [c]))
+             for c in sorted(ucd.canonical_decompositions.keys()
+                           + ucd.compatibility_decompositions.keys())])
+
+def emit_decomposition_table(table):
+    def render_char(c):
+        return "'\\u{%04X}'" % c
+
+    def render_decomposition(decomposition):
+        return '&[' + ', '.join(map(render_char, decomposition)) + ']'
+
+    def render_entry(entry):
+        c, decomposition = entry
+        return '(%s, %s)' % (render_char(c), render_decomposition(decomposition))
+
+    print_data(split_into_lines(map(render_entry, table), separator=',', indent=8, max_length=99))
 
 def emit_normalization_tests(ucd):
     print_data("""\
