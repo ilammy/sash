@@ -1339,7 +1339,10 @@ def emit_primary_composites(ucd, composites):
     print_data(split_into_lines(map(render, composites), separator=',', indent=8, max_length=99))
 
 def emit_decomposition_mappings(ucd):
-    canonical, compatibility = compute_full_decompositions(ucd)
+    report_status("\nOptimizing decomposition trie...")
+    mapping = compute_joint_decomposition_mapping(ucd)
+    (indices, buckets, characters), factor, size = optimize_decomposition_trie(mapping)
+    report_status("Done. Factor %d, estimated size %d KB" % (factor, size / 1024))
 
     print_data("""
 /// Decomposition mappings.
@@ -1347,61 +1350,197 @@ def emit_decomposition_mappings(ucd):
 /// This module contains definitions of derived properties used during the decomposition stage
 /// of Unicode normalization algorithms.
 pub mod decomposition_mappings {
+    // We are using a similar trie approach here as for the Canonical Combining Classes. Data
+    // for canonical and compatibility decomposition is packed into a single trie, indexed by
+    // code point values. The buckets contain offset and length of the decomposition in a big
+    // table of characters. If there is no decomposition then its length is zero.
+    //
+    // The tables do not contain data for Hangul syllables as it is quite bulky, so it should
+    // be computed on the fly using the algorithms provided in the standard.
+
     /// Get full canonical decomposition of character `c`.
+    ///
+    /// Returns Some slice if the decomposition is not trivial (not equal to the character itself).
+    /// Otherwise returns None.
+    ///
+    /// This function does not include support for precomposed Hangul syllables (D132) and will
+    /// return None for such characters. Decompositions for them must be computed programmatically.
     pub fn canonical_mapping(c: char) -> Option<&'static [(char, u8)]> {
-        CANONICAL_MAPPINGS
-            .binary_search_by(|&(probe, _)| probe.cmp(&c))
-            .ok()
-            .map(|index| CANONICAL_MAPPINGS[index].1)
+        let c = c as u32;
+
+        let index  = (c >> DECOMPOSITION_FACTOR) as usize;
+        let offset = (c & ((1 << DECOMPOSITION_FACTOR) - 1)) as usize;
+        let row    = DECOMPOSITION_INDICES[index] as usize;
+        let bucket = (row << DECOMPOSITION_FACTOR) + offset;
+
+        let (address, _, length, _) = DECOMPOSITION_BUCKETS[bucket];
+
+        if length == 0 {
+            return None;
+        }
+
+        let (address, length) = (address as usize, length as usize);
+
+        return Some(&DECOMPOSITION_DATA[address..(address + length)]);
     }
 
     /// Get full compatibility decomposition of character `c`.
+    ///
+    /// Returns Some slice if the decomposition is not trivial (not equal to the character itself).
+    /// Otherwise returns None.
+    ///
+    /// This function does not include support for precomposed Hangul syllables (D132) and will
+    /// return None for such characters. Decompositions for them must be computed programmatically.
     pub fn compatibility_mapping(c: char) -> Option<&'static [(char, u8)]> {
-        COMPATIBILITY_MAPPINGS
-            .binary_search_by(|&(probe, _)| probe.cmp(&c))
-            .ok()
-            .map(|index| COMPATIBILITY_MAPPINGS[index].1)
+        let c = c as u32;
+
+        let index  = (c >> DECOMPOSITION_FACTOR) as usize;
+        let offset = (c & ((1 << DECOMPOSITION_FACTOR) - 1)) as usize;
+        let row    = DECOMPOSITION_INDICES[index] as usize;
+        let bucket = (row << DECOMPOSITION_FACTOR) + offset;
+
+        let (_, address, _, length) = DECOMPOSITION_BUCKETS[bucket];
+
+        if length == 0 {
+            return None;
+        }
+
+        let (address, length) = (address as usize, length as usize);
+
+        return Some(&DECOMPOSITION_DATA[address..(address + length)]);
     }
 
-    /// Lookup table for `canonical_mapping()`.
-    const CANONICAL_MAPPINGS: &'static [(char, &'static [(char, u8)])] = &[
-""")
-    emit_decomposition_table(ucd, canonical)
+    /// Length of trie suffix.
+    const DECOMPOSITION_FACTOR: u8 = %d;
+
+    /// Lookup table of indices.
+    const DECOMPOSITION_INDICES: &'static [u8] = &[
+""" % factor)
+    emit_decomposition_indices(indices)
     print_data("""
     ];
 
-    /// Lookup table for `compatibility_mapping()`.
-    const COMPATIBILITY_MAPPINGS: &'static [(char, &'static [(char, u8)])] = &[
+    /// Lookup table of buckets.
+    const DECOMPOSITION_BUCKETS: &'static [(u16, u16, u8, u8)] = &[
 """)
-    emit_decomposition_table(ucd, compatibility)
+    emit_decomposition_buckets(buckets)
+    print_data("""
+    ];
+
+    /// Actual decomposition character data blob.
+    const DECOMPOSITION_DATA: &'static [(char, u8)] = &[
+""")
+    emit_decomposition_characters(ucd, characters)
     print_data("""
     ];
 }
 """)
 
-def compute_full_decompositions(ucd):
-    return ([(c, canonical_decomposition(ucd, [c]))
-             for c in sorted(ucd.canonical_decompositions.keys())],
-            [(c, compatibility_decomposition(ucd, [c]))
-             for c in sorted(ucd.canonical_decompositions.keys()
-                           + ucd.compatibility_decompositions.keys())])
+def compute_joint_decomposition_mapping(ucd):
+    mapping = {}
 
-def emit_decomposition_table(ucd, table):
-    def render_char(c):
-        return "'\\u{%04X}'" % c
+    mapped_chars_without_hangul = (range(0x0000, 0xAC00)
+                                +  range(0xD7B0, 0xD800)
+                                +  range(0xC000, 0x110000))
 
+    for c in mapped_chars_without_hangul:
+        canonical = canonical_decomposition(ucd, [c])
+        compatibility = compatibility_decomposition(ucd, [c])
+
+        if canonical == [c]:
+            canonical = None
+
+        if compatibility == [c]:
+            compatibility = None
+
+        if canonical or compatibility:
+            mapping[c] = (canonical, compatibility)
+
+    return mapping
+
+def optimize_decomposition_trie(mapping):
+    def unpack(trie, factor):
+        indices = [0] * len(trie)
+        buckets = []
+        bucket_count = 0
+
+        # Unpack trie buckets and indices.
+        # We'll keep decompositions as lists for now.
+
+        for index, bucket in enumerate(trie):
+            if bucket:
+                bucket_count += 1
+                indices[index] = bucket_count
+
+                for entry in bucket:
+                    if entry is None:
+                        buckets.append((None, None))
+                    else:
+                        buckets.append(entry)
+
+        buckets = [(None, None)] * (2**factor) + buckets
+
+        # Now enumerate all distinct decompositions, concatenate their
+        # character representations into a big list, and note where the
+        # decompositions are in this list and their lenght as well
+
+        decompositions = {None: (0, 0)}
+        characters = []
+
+        def add_decomposition(decomposition):
+            if decomposition:
+                decomposition = tuple(decomposition)
+                if decomposition not in decompositions:
+                    decompositions[decomposition] = len(characters), len(decomposition)
+                    characters.extend(decomposition)
+
+        for canonical, compatibility in buckets:
+            add_decomposition(canonical)
+            add_decomposition(compatibility)
+
+        # Uodate the bucket data, replacing actual decompositions-as-lists
+        # with offset/length pairs from the previously computed mapping.
+        # Note that we have placed an empty decomposition there beforehand.
+
+        def expand_bucket(bucket):
+            c, k = bucket
+            c_offset, c_length = decompositions[tuple(c) if c else None]
+            k_offset, k_length = decompositions[tuple(k) if k else None]
+            return c_offset, k_offset, c_length, k_length
+
+        buckets = map(expand_bucket, buckets)
+
+        return indices, buckets, characters
+
+    def estimate_size(unpacked):
+        indices, buckets, characters = unpacked
+        return (len(indices) * (1 if len(indices) < 256 else 2)
+            + 6 * len(buckets)
+            + 8 * len(characters))
+
+    return optimize_trie_by_size(mapping, unpack, estimate_size, starting_factor=7)
+
+def emit_decomposition_indices(indices):
+    def render(index):
+        return '%3d' % index
+
+    print_data(split_into_lines(map(render, indices), separator=',', indent=6, max_length=99))
+
+def emit_decomposition_buckets(buckets):
+    def render(bucket):
+        return '(%5d, %5d, %2d, %2d)' % bucket
+
+    print_data(split_into_lines(map(render, buckets), separator=',', indent=8, max_length=99))
+
+def emit_decomposition_characters(ucd, decompositions):
     def render_char_with_ccc(c):
         ccc = ucd.canonical_combining_class.get(c, 0)
-        return "('\\u{%04X}', %d)" % (c, ccc)
+        if c <= 0xFFFF:
+            return "('\\u{%04X}', %3d)" % (c, ccc)
+        else:
+            return "('\\u{%06X}', %1d)" % (c, ccc)
 
-    def render_decomposition(decomposition):
-        return '&[' + ', '.join(map(render_char_with_ccc, decomposition)) + ']'
-
-    def render_entry(entry):
-        c, decomposition = entry
-        return '(%s, %s)' % (render_char(c), render_decomposition(decomposition))
-
-    print_data(split_into_lines(map(render_entry, table), separator=',', indent=8, max_length=99))
+    print_data(split_into_lines(map(render_char_with_ccc, decompositions), separator=',', indent=8, max_length=99))
 
 def emit_normalization_tests(ucd):
     print_data("""\
