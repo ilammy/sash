@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 
 import argparse
+import math
 import os.path
 import pickle
+import random
 import sys
 import urllib2
 
@@ -1292,6 +1294,39 @@ def emit_composition_mappings(ucd):
                                 map(lambda m: (m[0][0], m[0][1], m[1]),
                                     ucd.primary_composites.iteritems()))
 
+    report_status("\nOptimizing composition hash table...")
+
+    if True:                # Using good precomputed values for Unicode 8.0.0
+        buckets = 4096
+        n1, n2, n3 = 61463, 17929, 60887
+        hash, source = primary_composite_hash_function(n1, n2, n3)
+        table = construct_primary_composite_hash_table(primary_composites, hash, buckets)
+        c_lookups, nc_lookups = \
+            analyze_primary_composite_hash_table(table, primary_composites, hash, buckets)
+    else:
+        table, source, ((n1, n2, n3), (c_lookups, nc_lookups)) = \
+            optimize_primary_composite_hash_table(primary_composites)
+        buckets = len(table)
+
+    report_status("Done. Estimated size %d KB" % ((16 * buckets) / 1024))
+
+    filled = len(primary_composites)
+    c_total = sum(map(lambda v: v[0] * v[1], c_lookups.iteritems()))
+    nc_total = sum(map(lambda v: v[0] * v[1], nc_lookups.iteritems()))
+
+    report_status("Used primes: %d, %d, %d" % (n1, n2, n3))
+    report_status("Load factor: %d/%d = %.2f%%" % (filled, buckets, 100.0 * filled / buckets))
+
+    report_status("Composites, average lookups: %.2f" % (1.0 * c_total / filled))
+    report_status("Lookup distribution:")
+    for number, count in sorted(c_lookups.iteritems()):
+        report_status("\t%2d -> %-3d = %5.2f%%" % (number, count, 100.0 * count / filled))
+
+    report_status("Non-composite, average lookups (estimated): %.2f" % (1.0 * nc_total / buckets))
+    report_status("Lookup distribution:")
+    for number, count in sorted(nc_lookups.iteritems()):
+        report_status("\t%2d -> %-4d = %5.2f%%" % (number, count, 100.0 * count / buckets))
+
     print_data("""
 /// Composition mappings.
 ///
@@ -1306,37 +1341,165 @@ pub mod composition_mappings {
     /// This function does not include support for precomposed Hangul syllables (D132),
     /// they must be computed programmatically.
     pub fn primary(c1: char, c2: char) -> Option<(char, u8)> {
-        PRIMARY_COMPOSITION_MAPPING
-            .binary_search_by(|&(p1, p2, _)| {
-                use std::cmp::Ordering;
-                match p1.cmp(&c1) {
-                    Ordering::Equal => p2.cmp(&c2),
-                    other => other,
-                }
-            })
-            .ok()
-            .map(|index| PRIMARY_COMPOSITION_MAPPING[index].2)
-    }
+        let c1 = c1 as u32;
+        let c2 = c2 as u32;
 
-    /// Lookup table for `primary()` containing all Primary Composite mappings expect for
-    /// precomposed Hangul syllables.
-    const PRIMARY_COMPOSITION_MAPPING: &'static [(char, char, (char, u8))] = &[
+        let mut index = hash(c1, c2) % HASH_TABLE_BUCKET_COUNT;
+
+        for _ in 0..HASH_TABLE_MAX_COLLISIONS {
+            match PRIMARY_COMPOSITION_HASH_TABLE[index as usize] {
+                MISSING => {
+                    return None;
+                }
+                (p1, p2, c3) if (p1 == c1) && (p2 == c2) => {
+                    return Some(c3);
+                }
+                _ => {
+                    index = (index + 1) % HASH_TABLE_BUCKET_COUNT;
+                }
+            }
+        }
+
+        return None;
+    }
 """)
-    emit_primary_composites(ucd, primary_composites)
+    print_data(source)
+    print_data("""
+    /// Maximum number of collisions in `PRIMARY_COMPOSITION_HASH_TABLE`.
+    const HASH_TABLE_MAX_COLLISIONS: u8 = %d;
+
+    /// Bucket count in `PRIMARY_COMPOSITION_HASH_TABLE`.
+    const HASH_TABLE_BUCKET_COUNT: u32 = %d;
+
+    /// Sentinel value for hash table that indicates an empty bucket.
+    /// It is guaranteed to be not equal to any valid character pair.
+    const MISSING: (u32, u32, (char, u8)) = (0xFFFFFFFF, 0xFFFFFFFF, ('\\u{0000}', 0));
+
+    /// Hash table buckets for `primary()`. They contain all Primary Composite mappings
+    /// except for precomposed Hangul syllables.
+    const PRIMARY_COMPOSITION_HASH_TABLE: &'static [(u32, u32, (char, u8))] = &[
+""" % (max(c_lookups), buckets))
+    emit_primary_composition_hash_table(ucd, table)
     print_data("""
     ];
 }
 """)
 
-def emit_primary_composites(ucd, composites):
-    composites = sorted(composites)
+def emit_primary_composition_hash_table(ucs, table):
+    def render(entry):
+        if entry is None:
+            return 'MISSING'
+        else:
+            c1, c2, c3 = entry
+            ccc = ucd.canonical_combining_class.get(c3, 0)
+            return "(0x%04X,  0x%04X, ('\\u{%04X}', %d))" % (c1, c2, c3, ccc)
 
-    def render(composite):
-        c1, c2, c3 = composite
-        ccc = ucd.canonical_combining_class.get(c3, 0)
-        return "('\\u{%04X}', '\\u{%04X}', ('\\u{%04X}', %d))" % (c1, c2, c3, ccc)
+    print_data(split_into_lines(map(render, table), separator=',', indent=8, max_length=99))
 
-    print_data(split_into_lines(map(render, composites), separator=',', indent=8, max_length=99))
+def primary_composite_hash_function(n1, n2, n3):
+    def hash(c1, c2):
+        r = (n3 + c1) & 0xFFFFFFFF
+        r = (n2 * r)  & 0xFFFFFFFF
+        r = (c2 + r)  & 0xFFFFFFFF
+        r = (n1 * r)  & 0xFFFFFFFF
+        return r
+
+    source = """
+    /// Compute hash function of a code point pair.
+    fn hash(c1: u32, c2: u32) -> u32 {
+        let (n1, n2, n3) = (%d, %d, %d);
+
+        return c1.wrapping_add(n3)  // n1 * (n2 * (n3 + c1) + c2)
+                 .wrapping_mul(n2)
+                 .wrapping_add(c2)
+                 .wrapping_mul(n1);
+    }
+"""
+    return hash, source % (n1, n2, n3)
+
+def construct_primary_composite_hash_table(primary_composites, hash, bucket_count):
+    table = [None] * bucket_count
+
+    for c1, c2, c3 in primary_composites:
+        index = hash(c1, c2) % bucket_count
+
+        while table[index] is not None:
+            index = (index + 1) % bucket_count
+
+        table[index] = c1, c2, c3
+
+    return table
+
+def analyze_primary_composite_hash_table(table, primary_composites, hash, bucket_count):
+    c_lookups = {}
+
+    for c1, c2, c3 in primary_composites:
+        index = hash(c1, c2) % bucket_count
+        for_this = 1
+
+        while (table[index] is not None) and (table[index] != (c1, c2, c3)):
+            index = (index + 1) % bucket_count
+            for_this += 1
+
+        c_lookups[for_this] = c_lookups.get(for_this, 0) + 1
+
+    # Unfortunately, it's not an option to directly probe all 1099511627776
+    # possible Unicode pairs, so we'll have to deal with composites only.
+    # Though, we can estimate lookup statistics for other character pairs,
+    # assuming that these pairs are distributed evenly over the hash table.
+
+    max_lookups = max(c_lookups)
+
+    nc_lookups = {}
+
+    for start_index in xrange(0, bucket_count):
+        for_this = 1
+        index = start_index
+
+        while (table[index] is not None) and (for_this < max_lookups):
+            index = (index + 1) % bucket_count
+            for_this += 1
+
+        nc_lookups[for_this] = nc_lookups.get(for_this, 0) + 1
+
+    return c_lookups, nc_lookups
+
+def optimize_primary_composite_hash_table(primary_composites):
+    bucket_count = 4096
+
+    def prime_number(n):
+        if (n % 2) == 0:
+            return n == 2
+        for p in xrange(3, int(math.sqrt(n) + 1), 2):
+            if (n % p) == 0:
+                return False
+        return True
+
+    primes = filter(prime_number, xrange(3, 2**16, 2))
+
+    best_nums = None
+    best_value = 2**32
+    best_lookups = None
+
+    for i in xrange(5000):
+        n1, n2, n3 = random.sample(primes, 3)
+
+        hash, source = primary_composite_hash_function(n1, n2, n3)
+
+        table = construct_primary_composite_hash_table(primary_composites, hash, bucket_count)
+
+        c_lookups, nc_lookups = \
+            analyze_primary_composite_hash_table(table, primary_composites, hash, bucket_count)
+
+        value = sum(map(lambda v: v[0] * v[1], c_lookups.iteritems())) \
+              + sum(map(lambda v: v[0] * v[1], nc_lookups.iteritems()))
+
+        if value < best_value:
+            best_nums = n1, n2, n3
+            best_value = value
+            best_lookups = c_lookups, nc_lookups
+
+    return table, source, (best_nums, best_lookups)
 
 def emit_decomposition_mappings(ucd):
     report_status("\nOptimizing decomposition trie...")
