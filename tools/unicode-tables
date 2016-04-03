@@ -1308,7 +1308,7 @@ def emit_composition_mappings(ucd):
             optimize_primary_composite_hash_table(primary_composites)
         buckets = len(table)
 
-    report_status("Done. Estimated size %d KB" % ((16 * buckets) / 1024))
+    report_status("Done. Estimated size %d KB" % ((12 * buckets) / 1024))
 
     filled = len(primary_composites)
     c_total = sum(map(lambda v: v[0] * v[1], c_lookups.iteritems()))
@@ -1333,6 +1333,8 @@ def emit_composition_mappings(ucd):
 /// This module contains definitions of derived properties used during the composition stage
 /// of Unicode normalization algorithms.
 pub mod composition_mappings {
+    use util::charcc;
+
     /// Get a primary composite of `c1` of `c2` if it exists.
     ///
     /// A Primary Composite (D114) is a Canonical Decomposable Character (D69) which is not
@@ -1340,7 +1342,7 @@ pub mod composition_mappings {
     ///
     /// This function does not include support for precomposed Hangul syllables (D132),
     /// they must be computed programmatically.
-    pub fn primary(c1: char, c2: char) -> Option<(char, u8)> {
+    pub fn primary(c1: char, c2: char) -> Option<charcc> {
         let c1 = c1 as u32;
         let c2 = c2 as u32;
 
@@ -1352,7 +1354,7 @@ pub mod composition_mappings {
                     return None;
                 }
                 (p1, p2, c3) if (p1 == c1) && (p2 == c2) => {
-                    return Some(c3);
+                    return Some(charcc::from_u32(c3));
                 }
                 _ => {
                     index = (index + 1) % HASH_TABLE_BUCKET_COUNT;
@@ -1373,11 +1375,11 @@ pub mod composition_mappings {
 
     /// Sentinel value for hash table that indicates an empty bucket.
     /// It is guaranteed to be not equal to any valid character pair.
-    const MISSING: (u32, u32, (char, u8)) = (0xFFFFFFFF, 0xFFFFFFFF, ('\\u{0000}', 0));
+    const MISSING: (u32, u32, u32) = (0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF);
 
     /// Hash table buckets for `primary()`. They contain all Primary Composite mappings
     /// except for precomposed Hangul syllables.
-    const PRIMARY_COMPOSITION_HASH_TABLE: &'static [(u32, u32, (char, u8))] = &[
+    const PRIMARY_COMPOSITION_HASH_TABLE: &'static [(u32, u32, u32)] = &[
 """ % (max(c_lookups), buckets))
     emit_primary_composition_hash_table(ucd, table)
     print_data("""
@@ -1385,14 +1387,18 @@ pub mod composition_mappings {
 }
 """)
 
-def emit_primary_composition_hash_table(ucs, table):
+def charcc(ucd, c):
+    ccc = ucd.canonical_combining_class.get(c, 0)
+    return (ccc << 24) | c
+
+def emit_primary_composition_hash_table(ucd, table):
     def render(entry):
         if entry is None:
             return 'MISSING'
         else:
             c1, c2, c3 = entry
-            ccc = ucd.canonical_combining_class.get(c3, 0)
-            return "(0x%04X,  0x%04X, ('\\u{%04X}', %d))" % (c1, c2, c3, ccc)
+            c3 = charcc(ucd, c3)
+            return "(0x%04X,  0x%04X, 0x%04X)" % (c1, c2, c3)
 
     print_data(split_into_lines(map(render, table), separator=',', indent=8, max_length=99))
 
@@ -1513,6 +1519,8 @@ def emit_decomposition_mappings(ucd):
 /// This module contains definitions of derived properties used during the decomposition stage
 /// of Unicode normalization algorithms.
 pub mod decomposition_mappings {
+    use util::charcc;
+
     // We are using a similar trie approach here as for the Canonical Combining Classes. Data
     // for canonical and compatibility decomposition is packed into a single trie, indexed by
     // code point values. The buckets contain offset and length of the decomposition in a big
@@ -1528,7 +1536,7 @@ pub mod decomposition_mappings {
     ///
     /// This function does not include support for precomposed Hangul syllables (D132) and will
     /// return None for such characters. Decompositions for them must be computed programmatically.
-    pub fn canonical_mapping(c: char) -> Option<&'static [(char, u8)]> {
+    pub fn canonical_mapping(c: char) -> Option<&'static [charcc]> {
         let c = c as u32;
 
         let index  = (c >> DECOMPOSITION_FACTOR) as usize;
@@ -1544,7 +1552,7 @@ pub mod decomposition_mappings {
 
         let (address, length) = (address as usize, length as usize);
 
-        return Some(&DECOMPOSITION_DATA[address..(address + length)]);
+        return Some(charcc::from_u32_slice(&DECOMPOSITION_DATA[address..(address + length)]));
     }
 
     /// Get full compatibility decomposition of character `c`.
@@ -1554,7 +1562,7 @@ pub mod decomposition_mappings {
     ///
     /// This function does not include support for precomposed Hangul syllables (D132) and will
     /// return None for such characters. Decompositions for them must be computed programmatically.
-    pub fn compatibility_mapping(c: char) -> Option<&'static [(char, u8)]> {
+    pub fn compatibility_mapping(c: char) -> Option<&'static [charcc]> {
         let c = c as u32;
 
         let index  = (c >> DECOMPOSITION_FACTOR) as usize;
@@ -1570,7 +1578,7 @@ pub mod decomposition_mappings {
 
         let (address, length) = (address as usize, length as usize);
 
-        return Some(&DECOMPOSITION_DATA[address..(address + length)]);
+        return Some(charcc::from_u32_slice(&DECOMPOSITION_DATA[address..(address + length)]));
     }
 
     /// Length of trie suffix.
@@ -1591,7 +1599,7 @@ pub mod decomposition_mappings {
     ];
 
     /// Actual decomposition character data blob.
-    const DECOMPOSITION_DATA: &'static [(char, u8)] = &[
+    const DECOMPOSITION_DATA: &'static [u32] = &[
 """)
     emit_decomposition_characters(ucd, characters)
     print_data("""
@@ -1679,7 +1687,7 @@ def optimize_decomposition_trie(mapping):
         indices, buckets, characters = unpacked
         return (len(indices) * (1 if len(indices) < 256 else 2)
             + 6 * len(buckets)
-            + 8 * len(characters))
+            + 4 * len(characters))
 
     return optimize_trie_by_size(mapping, unpack, estimate_size, starting_factor=7)
 
@@ -1696,14 +1704,10 @@ def emit_decomposition_buckets(buckets):
     print_data(split_into_lines(map(render, buckets), separator=',', indent=8, max_length=99))
 
 def emit_decomposition_characters(ucd, decompositions):
-    def render_char_with_ccc(c):
-        ccc = ucd.canonical_combining_class.get(c, 0)
-        if c <= 0xFFFF:
-            return "('\\u{%04X}', %3d)" % (c, ccc)
-        else:
-            return "('\\u{%06X}', %1d)" % (c, ccc)
+    def render_charcc(c):
+        return "0x%04X" % charcc(ucd, c)
 
-    print_data(split_into_lines(map(render_char_with_ccc, decompositions), separator=',', indent=8, max_length=99))
+    print_data(split_into_lines(map(render_charcc, decompositions), separator=',', indent=8, max_length=99))
 
 def emit_normalization_tests(ucd):
     print_data("""\

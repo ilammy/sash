@@ -14,6 +14,7 @@
 
 use std::iter::{FromIterator, IntoIterator};
 use tables::{decomposition_mappings, composition_mappings};
+use util::charcc;
 
 //
 // Definitions of Normalization Forms
@@ -22,27 +23,27 @@ use tables::{decomposition_mappings, composition_mappings};
 /// Normalize a string according to **Normalization Form D** (_D118_).
 pub fn nfd(s: &str) -> String {
     let v = canonical_decomposition(s.chars());
-    return String::from_iter(v.iter().map(|&(c, _)| c));
+    return String::from_iter(v.iter().map(|cc| cc.to_char()));
 }
 
 /// Normalize a string according to **Normalization Form KD** (_D119_).
 pub fn nfkd(s: &str) -> String {
     let v = compatibility_decomposition(s.chars());
-    return String::from_iter(v.iter().map(|&(c, _)| c));
+    return String::from_iter(v.iter().map(|cc| cc.to_char()));
 }
 
 /// Normalize a string according to **Normalization Form C** (_D120_).
 pub fn nfc(s: &str) -> String {
     let mut v = canonical_decomposition(s.chars());
     compose_canonically(&mut v);
-    return String::from_iter(v.iter().map(|&(c, _)| c));
+    return String::from_iter(v.iter().map(|cc| cc.to_char()));
 }
 
 /// Normalize a string according to **Normalization Form KC** (_D121_).
 pub fn nfkc(s: &str) -> String {
     let mut v = compatibility_decomposition(s.chars());
     compose_canonically(&mut v);
-    return String::from_iter(v.iter().map(|&(c, _)| c));
+    return String::from_iter(v.iter().map(|cc| cc.to_char()));
 }
 
 //
@@ -50,7 +51,7 @@ pub fn nfkc(s: &str) -> String {
 //
 
 /// Produce a Compatibility decomposition (D65) of a character sequence.
-fn compatibility_decomposition<I>(chars: I) -> Vec<(char, u8)>
+fn compatibility_decomposition<I>(chars: I) -> Vec<charcc>
     where I: IntoIterator<Item=char>
 {
     let mut buffer = Vec::new();
@@ -65,7 +66,7 @@ fn compatibility_decomposition<I>(chars: I) -> Vec<(char, u8)>
 }
 
 /// Produce a Canonical decomposition (D68) of a character sequence.
-fn canonical_decomposition<I>(chars: I) -> Vec<(char, u8)>
+fn canonical_decomposition<I>(chars: I) -> Vec<charcc>
     where I: IntoIterator<Item=char>
 {
     let mut buffer = Vec::new();
@@ -80,9 +81,7 @@ fn canonical_decomposition<I>(chars: I) -> Vec<(char, u8)>
 }
 
 /// Push a Compatibility decomposition (D65) of a single character into the given buffer.
-fn push_compatibility_decomposition(c: char, vec: &mut Vec<(char, u8)>) {
-    use tables::properties::canonical_combining_class as ccc;
-
+fn push_compatibility_decomposition(c: char, vec: &mut Vec<charcc>) {
     if push_hangul_decomposition(c, vec) {
         return;
     }
@@ -92,15 +91,13 @@ fn push_compatibility_decomposition(c: char, vec: &mut Vec<(char, u8)>) {
             vec.extend_from_slice(decomposition);
         }
         None => {
-            vec.push((c, ccc(c)));
+            vec.push(charcc::from_char(c));
         }
     }
 }
 
 /// Push a Canonical decomposition (D68) of a single character into the given buffer.
-fn push_canonical_decomposition(c: char, vec: &mut Vec<(char, u8)>) {
-    use tables::properties::canonical_combining_class as ccc;
-
+fn push_canonical_decomposition(c: char, vec: &mut Vec<charcc>) {
     if push_hangul_decomposition(c, vec) {
         return;
     }
@@ -110,7 +107,7 @@ fn push_canonical_decomposition(c: char, vec: &mut Vec<(char, u8)>) {
             vec.extend_from_slice(decomposition);
         }
         None => {
-            vec.push((c, ccc(c)));
+            vec.push(charcc::from_char(c));
         }
     }
 }
@@ -131,9 +128,8 @@ const S_COUNT: u32 = L_COUNT * N_COUNT;
 
 /// If a character is a Precomposed Hangul syllable (D132) then push its full decomposition into
 /// the given buffer and return true. Otherwise do not modify the buffer and return false.
-fn push_hangul_decomposition(c: char, vec: &mut Vec<(char, u8)>) -> bool {
+fn push_hangul_decomposition(c: char, vec: &mut Vec<charcc>) -> bool {
     use std::char;
-    use tables::properties::canonical_combining_class as ccc;
 
     if ((c as u32) < S_BASE) || ((S_BASE + S_COUNT) <= (c as u32)) {
         return false;
@@ -154,19 +150,15 @@ fn push_hangul_decomposition(c: char, vec: &mut Vec<(char, u8)>) -> bool {
         let v = char::from_u32(V_BASE + v_index).unwrap();
         let t = char::from_u32(T_BASE + t_index).unwrap();
 
-        assert!((ccc(l) == 0) && (ccc(v) == 0) && (ccc(t) == 0));
-
-        vec.push((l, 0));
-        vec.push((v, 0));
-        vec.push((t, 0));
+        vec.push(charcc::from_char_with_ccc(l, 0));
+        vec.push(charcc::from_char_with_ccc(v, 0));
+        vec.push(charcc::from_char_with_ccc(t, 0));
     } else {
         let l = char::from_u32(L_BASE + l_index).unwrap();
         let v = char::from_u32(V_BASE + v_index).unwrap();
 
-        assert!((ccc(l) == 0) && (ccc(v) == 0));
-
-        vec.push((l, 0));
-        vec.push((v, 0));
+        vec.push(charcc::from_char_with_ccc(l, 0));
+        vec.push(charcc::from_char_with_ccc(v, 0));
     }
 
     return true;
@@ -174,9 +166,8 @@ fn push_hangul_decomposition(c: char, vec: &mut Vec<(char, u8)>) -> bool {
 
 /// If a character pair forms a Precomposed Hangul syllable (D132) when it is canonically composed
 /// then return this Some composition. Otherwise return None.
-fn compose_hangul(c1: char, c2: char) -> Option<(char, u8)> {
+fn compose_hangul(c1: char, c2: char) -> Option<charcc> {
     use std::char;
-    use tables::properties::canonical_combining_class as ccc;
 
     // In the same way as with decomposition, arithmetics and character ranges guarantee codepoint
     // validity here, and precomposed Hangul syllables also have canonical combining class zero.
@@ -192,9 +183,7 @@ fn compose_hangul(c1: char, c2: char) -> Option<(char, u8)> {
 
         let lv = char::from_u32(S_BASE + lv_index).unwrap();
 
-        assert!(ccc(lv) == 0);
-
-        return Some((lv, 0));
+        return Some(charcc::from_char_with_ccc(lv, 0));
     }
 
     // <LV, T> pair
@@ -206,9 +195,7 @@ fn compose_hangul(c1: char, c2: char) -> Option<(char, u8)> {
 
         let lvt = char::from_u32((c1 as u32) + t_index).unwrap();
 
-        assert!(ccc(lvt) == 0);
-
-        return Some((lvt, 0));
+        return Some(charcc::from_char_with_ccc(lvt, 0));
     }
 
     // Anything else
@@ -220,7 +207,7 @@ fn compose_hangul(c1: char, c2: char) -> Option<(char, u8)> {
 //
 
 /// Apply the Canonical Ordering Algorithm (D109) to a character slice.
-fn reorder_canonically(slice: &mut [(char, u8)]) {
+fn reorder_canonically(slice: &mut [charcc]) {
     // Actually, this is a bubble sort, but with one important detail: starter characters are never
     // reordered. That is, we must sort only the grapheme clusters. Therefore we can replace O(n^2)
     // bubble sort of the entire string with an O(n) pass over the clusters. Each grapheme cluster
@@ -233,7 +220,7 @@ fn reorder_canonically(slice: &mut [(char, u8)]) {
     let mut cur = 0;
     while cur < len {
         // Skip over sequences of starters. We are looking for non-starters.
-        if slice[cur].1 == 0 {
+        if slice[cur].ccc() == 0 {
             cur += 1;
             continue;
         }
@@ -241,7 +228,7 @@ fn reorder_canonically(slice: &mut [(char, u8)]) {
         // Now find the next starter so we know where to stop.
         let mut next = cur + 1;
         while next < len {
-            if slice[next].1 == 0 {
+            if slice[next].ccc() == 0 {
                 break;
             }
             next += 1;
@@ -250,7 +237,7 @@ fn reorder_canonically(slice: &mut [(char, u8)]) {
         // Apply bubble sort to the cluster.
         for limit in (cur..next).rev() {
             for i in cur..limit {
-                if slice[i].1 > slice[i + 1].1 {
+                if slice[i].ccc() > slice[i + 1].ccc() {
                     slice.swap(i, i + 1);
                 }
             }
@@ -266,12 +253,13 @@ fn reorder_canonically(slice: &mut [(char, u8)]) {
 //
 
 /// Apply the Canonical Composition Algorithm (D117) to a character buffer.
-fn compose_canonically(buffer: &mut Vec<(char, u8)>) {
+fn compose_canonically(buffer: &mut Vec<charcc>) {
     let mut ci = 1;
     while ci < buffer.len() {
         if let Some(li) = find_starter(&buffer[..], ci) {
             if !blocked(&buffer[..], li, ci) {
-                if let Some(p) = primary_composite(buffer[li].0, buffer[ci].0) {
+                let (l, c) = (buffer[li].to_char(), buffer[ci].to_char());
+                if let Some(p) = primary_composite(l, c) {
                     buffer[li] = p;
                     buffer.remove(ci);
                     continue;
@@ -284,9 +272,9 @@ fn compose_canonically(buffer: &mut Vec<(char, u8)>) {
 
 /// Find the last Starter (D107) preceding C in a character slice.
 /// This is step R1 of the Canonical Composition Algorithm (D117).
-fn find_starter(slice: &[(char, u8)], ci: usize) -> Option<usize> {
+fn find_starter(slice: &[charcc], ci: usize) -> Option<usize> {
     for li in (0..ci).rev() {
-        if slice[li].1 == 0 {
+        if slice[li].ccc() == 0 {
             return Some(li);
         }
     }
@@ -295,15 +283,15 @@ fn find_starter(slice: &[(char, u8)], ci: usize) -> Option<usize> {
 
 /// Verify that A is not blocked (D115) from C in a character slice.
 /// This is the first part of step R2 of the Canonical Composition Algorithm (D117).
-fn blocked(slice: &[(char, u8)], ai: usize, ci: usize) -> bool {
+fn blocked(slice: &[charcc], ai: usize, ci: usize) -> bool {
     assert!(ai < ci);
 
-    let ccc_a = slice[ai].1;
-    let ccc_c = slice[ci].1;
+    let ccc_a = slice[ai].ccc();
+    let ccc_c = slice[ci].ccc();
 
     if ccc_a == 0 {
         for bi in (ai + 1)..ci {
-            let ccc_b = slice[bi].1;
+            let ccc_b = slice[bi].ccc();
 
             if (ccc_b == 0) || (ccc_b >= ccc_c) {
                 return true;
@@ -316,6 +304,6 @@ fn blocked(slice: &[(char, u8)], ai: usize, ci: usize) -> bool {
 
 /// Check for a Primary Composite (D114) equivalent to the given pair of characters.
 /// This is the second part of step R2 of the Canonical Composition Algorithm (D117).
-fn primary_composite(c1: char, c2: char) -> Option<(char, u8)> {
+fn primary_composite(c1: char, c2: char) -> Option<charcc> {
     compose_hangul(c1, c2).or_else(|| composition_mappings::primary(c1, c2))
 }
