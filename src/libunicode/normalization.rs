@@ -22,28 +22,89 @@ use util::charcc;
 
 /// Normalize a string according to **Normalization Form D** (_D118_).
 pub fn nfd(s: &str) -> String {
+    if already_normalized(s, NormalizationForm::D) {
+        return s.to_owned();
+    }
     let v = canonical_decomposition(s.chars());
-    return String::from_iter(v.iter().map(|cc| cc.to_char()));
+    return cleaned_up_string(v);
 }
 
 /// Normalize a string according to **Normalization Form KD** (_D119_).
 pub fn nfkd(s: &str) -> String {
+    if already_normalized(s, NormalizationForm::KD) {
+        return s.to_owned();
+    }
     let v = compatibility_decomposition(s.chars());
-    return String::from_iter(v.iter().map(|cc| cc.to_char()));
+    return cleaned_up_string(v);
 }
 
 /// Normalize a string according to **Normalization Form C** (_D120_).
 pub fn nfc(s: &str) -> String {
+    if already_normalized(s, NormalizationForm::C) {
+        return s.to_owned();
+    }
     let mut v = canonical_decomposition(s.chars());
     compose_canonically(&mut v);
-    return String::from_iter(v.iter().map(|cc| cc.to_char()));
+    return cleaned_up_string(v);
 }
 
 /// Normalize a string according to **Normalization Form KC** (_D121_).
 pub fn nfkc(s: &str) -> String {
+    if already_normalized(s, NormalizationForm::KC) {
+        return s.to_owned();
+    }
     let mut v = compatibility_decomposition(s.chars());
     compose_canonically(&mut v);
-    return String::from_iter(v.iter().map(|cc| cc.to_char()));
+    return cleaned_up_string(v);
+}
+
+fn cleaned_up_string(normalized: Vec<charcc>) -> String {
+    String::from_iter(normalized.iter().map(|cc| cc.to_char()))
+}
+
+//
+// Quick check
+//
+
+enum NormalizationForm { C, D, KC, KD }
+
+/// Check whether a string is already in the specified normalization form.
+fn already_normalized(s: &str, form: NormalizationForm) -> bool {
+    use tables::properties::canonical_combining_class as ccc;
+    use tables::{quick_check};
+
+    let mut last_ccc = 0;
+
+    for c in s.chars() {
+        // ASCII text is always normalized in any form.
+        if c <= '\u{7F}' {
+            last_ccc = 0;
+            continue;
+        }
+
+        let this_ccc = ccc(c);
+
+        // The string is not normalized if canonical ordering is not observed.
+        if (last_ccc > this_ccc) && (this_ccc != 0) {
+            return false;
+        }
+
+        // Finally check for explicit exceptions.
+        let not_allowed = match form {
+            NormalizationForm::C  => quick_check::not_allowed_in_nfc(c),
+            NormalizationForm::D  => quick_check::not_allowed_in_nfd(c),
+            NormalizationForm::KC => quick_check::not_allowed_in_nfkc(c),
+            NormalizationForm::KD => quick_check::not_allowed_in_nfkd(c),
+        };
+
+        if not_allowed {
+            return false;
+        }
+
+        last_ccc = this_ccc;
+    }
+
+    return true;
 }
 
 //

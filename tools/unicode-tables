@@ -237,6 +237,27 @@ def parse_property_list(data):
 
     return properties
 
+def parse_quick_check_props(data):
+    """Extract Quick_Check properties from DerivedNormalizationProps.txt"""
+    props = {'NFD_QC': [], 'NFC_QC': [], 'NFKD_QC': [], 'NFKC_QC': []}
+
+    for line in data.split('\n'):
+        if not line or line.startswith('#'):
+            continue
+
+        row = line.split('#')[0].split(';')
+        kind = row[1].strip()
+
+        if kind not in props:
+            continue
+
+        codepoints = parse_codepoint_range(row[0])
+        value = row[2].strip()
+
+        props[kind].extend(map(lambda c: (c, value), codepoints))
+
+    return props
+
 def parse_codepoint_range(cp_range):
     """Covert codepoint range format used in UCD into a list of codepoints"""
     parts = cp_range.strip().split('..')
@@ -566,11 +587,12 @@ class UCD:
     pass
 
 def prepare_unicode_character_data(version):
-    UnicodeData           = retrieve_ucd('UnicodeData.txt',           version)
-    HangulSyllableType    = retrieve_ucd('HangulSyllableType.txt',    version)
-    CompositionExclusions = retrieve_ucd('CompositionExclusions.txt', version)
-    PropList              = retrieve_ucd('PropList.txt',              version)
-    NormalizationTest     = retrieve_ucd('NormalizationTest.txt',     version)
+    UnicodeData               = retrieve_ucd('UnicodeData.txt',               version)
+    HangulSyllableType        = retrieve_ucd('HangulSyllableType.txt',        version)
+    CompositionExclusions     = retrieve_ucd('CompositionExclusions.txt',     version)
+    PropList                  = retrieve_ucd('PropList.txt',                  version)
+    NormalizationTest         = retrieve_ucd('NormalizationTest.txt',         version)
+    DerivedNormalizationProps = retrieve_ucd('DerivedNormalizationProps.txt', version)
 
     report_status('Parsing Unicode Character Data...')
 
@@ -582,6 +604,7 @@ def prepare_unicode_character_data(version):
     properties = parse_property_list(PropList)
     [normalization_tests_nontrivial,
      normalization_tests_trivial] = parse_normalization_tests(NormalizationTest, assigned_codepoints)
+    quick_check = parse_quick_check_props(DerivedNormalizationProps)
 
     report_status('Precomputing derived properties and decompositions...')
 
@@ -599,6 +622,7 @@ def prepare_unicode_character_data(version):
     ucd.primary_composites           = compute_primary_composites(ucd)
 
     ucd.general_category = general_category
+    ucd.quick_check      = quick_check
     ucd.properties       = properties
     ucd.version          = version
     ucd.names            = names
@@ -880,6 +904,7 @@ def emit_header():
 //! - *properties*: Unicode character properties
 //! - *composition_mappings*: composition mappings for normalization
 //! - *decomposition_mappings*: decomposition mappings for normalization
+//! - *quick_check*: Quick_Check exclusion tables
 """)
 
 def emit_unicode_version(version):
@@ -1181,6 +1206,7 @@ def emit_unicode_properties(ucd):
     emit_canonical_combining_class(ucd)
     emit_composition_mappings(ucd)
     emit_decomposition_mappings(ucd)
+    emit_quick_check(ucd)
 
 def emit_canonical_combining_class(ucd):
     report_status("\nOptimizing CCC trie...")
@@ -1708,6 +1734,153 @@ def emit_decomposition_characters(ucd, decompositions):
         return "0x%04X" % charcc(ucd, c)
 
     print_data(split_into_lines(map(render_charcc, decompositions), separator=',', indent=8, max_length=99))
+
+def emit_quick_check(ucd):
+    report_status("\nOptimizing Quick_Check trie...")
+    mapping = compute_joint_quick_check_mapping(ucd)
+    (indices, buckets), factor, size = optimize_quick_check_trie(mapping)
+    report_status("Done. Factor %d, estimated size %d KB" % (factor, size / 1024))
+
+    print_data("""
+/// Quick_Check exclusions.
+///
+/// This module provides predicates used for detecting normalization forms. These are used to
+/// check whether text is already normalized and does not need additional processing.
+pub mod quick_check {
+    /// Filter characters that cannot occur in NFC-normalized text.
+    ///
+    /// Returns true for code points that have Quick_Check(NFC) values NO or MAYBE.
+    ///
+    /// Strictly speaking, MAYBE characters can occur is NFC-normalized text, but to confirm this
+    /// we need to actually normalize the text, so it does not matter for us.
+    pub fn not_allowed_in_nfc(c: char) -> bool {
+        (quick_check_flags(c) & QCC_MASK) != 0
+    }
+
+    /// Filter characters that cannot occur in NFD-normalized text.
+    ///
+    /// Returns true for code points that have Quick_Check(NFD) value NO.
+    pub fn not_allowed_in_nfd(c: char) -> bool {
+        (quick_check_flags(c) & QCD_MASK) != 0
+    }
+
+    /// Filter characters that cannot occur in NFC-normalized text.
+    ///
+    /// Returns true for code points that have Quick_Check(NFKC) values NO or MAYBE.
+    ///
+    /// Strictly speaking, MAYBE characters can occur is NFKC-normalized text, but to confirm this
+    /// we need to actually normalize the text, so it does not matter for us.
+    pub fn not_allowed_in_nfkc(c: char) -> bool {
+        (quick_check_flags(c) & QKC_MASK) != 0
+    }
+
+    /// Filter characters that cannot occur in NFKD-normalized text.
+    ///
+    /// Returns true for code points that have Quick_Check(NFKD) value NO.
+    pub fn not_allowed_in_nfkd(c: char) -> bool {
+        (quick_check_flags(c) & QKD_MASK) != 0
+    }
+
+    /// Lookup Quick_Check flags for a given character.
+    fn quick_check_flags(c: char) -> u8 {
+        let c = c as u32;
+
+        let index  = (c >> QUICK_CHECK_FACTOR) as usize;
+        let offset = (c & ((1 << QUICK_CHECK_FACTOR) - 1)) as usize;
+        let row    = QUICK_CHECK_INDICES[index] as usize;
+        let bucket = (row << QUICK_CHECK_FACTOR) + offset;
+
+        return QUICK_CHECK_BUCKETS[bucket];
+    }
+
+    // See 'mod properties' for an explanation of how tries work.
+
+    const QCC_MASK: u8 = 0x01;
+    const QCD_MASK: u8 = 0x02;
+    const QKC_MASK: u8 = 0x04;
+    const QKD_MASK: u8 = 0x08;
+
+    /// Length of the trie suffix.
+    const QUICK_CHECK_FACTOR: u8 = %d;
+
+    /// Quick check trie indices.
+    const QUICK_CHECK_INDICES: &'static [u8] = &[
+""" % factor)
+    emit_quick_check_indices(indices)
+    print_data("""
+    ];
+
+    /// Quick check trie data.
+    const QUICK_CHECK_BUCKETS: &'static [u8] = &[
+""")
+    emit_quick_check_buckets(buckets)
+    print_data("""
+    ];
+}
+""")
+
+def compute_joint_quick_check_mapping(ucd):
+    qc_nfc  = set(map(lambda e: e[0], ucd.quick_check['NFC_QC']))
+    qc_nfd  = set(map(lambda e: e[0], ucd.quick_check['NFD_QC']))
+    qc_nfkc = set(map(lambda e: e[0], ucd.quick_check['NFKC_QC']))
+    qc_nfkd = set(map(lambda e: e[0], ucd.quick_check['NFKD_QC']))
+
+    mapping = {}
+
+    for c in xrange(0, 0x110000):
+        in_nfc  = c in qc_nfc
+        in_nfd  = c in qc_nfd
+        in_nfkc = c in qc_nfkc
+        in_nfkd = c in qc_nfkd
+
+        if in_nfc or in_nfd or in_nfkc or in_nfkc:
+            mapping[c] = in_nfc, in_nfd, in_nfkc, in_nfkd
+
+    return mapping
+
+def optimize_quick_check_trie(mapping):
+    def unpack(trie, factor):
+        indices = [0] * len(trie)
+        buckets = [[(False, False, False, False)] * (2**factor)]
+
+        for index, bucket in enumerate(trie):
+            if bucket:
+                bucket = map(lambda e: (False, False, False, False) if e is None else e, bucket)
+
+                if bucket in buckets:
+                    indices[index] = buckets.index(bucket)
+                else:
+                    indices[index] = len(buckets)
+                    buckets.append(bucket)
+
+        # Flatten the list
+        buckets = sum(buckets, [])
+
+        return indices, buckets
+
+    def estimate_size(unpacked):
+        indices, buckets = unpacked
+        return len(indices) + len(buckets)
+
+    return optimize_trie_by_size(mapping, unpack, estimate_size, starting_factor=8)
+
+def emit_quick_check_indices(indices):
+    def render(index):
+        return '%3d' % index
+
+    print_data(split_into_lines(map(render, indices), separator=',', indent=8, max_length=99))
+
+def emit_quick_check_buckets(buckets):
+    def render(qc):
+        value = 0
+        nfc, nfd, nfkc, nfkd = qc
+        if nfc:  value |= 0x01
+        if nfd:  value |= 0x02
+        if nfkc: value |= 0x04
+        if nfkd: value |= 0x08
+        return '%2d' % value
+
+    print_data(split_into_lines(map(render, buckets), separator=',', indent=8, max_length=99))
 
 def emit_normalization_tests(ucd):
     print_data("""\
