@@ -146,16 +146,18 @@ fn push_hangul_decomposition(c: char, vec: &mut Vec<charcc>) -> bool {
     // class is guaranteed to not change in Unicode, so we can save a table lookup on that.
 
     if t_index > 0 {
-        let l = char::from_u32(L_BASE + l_index).unwrap();
-        let v = char::from_u32(V_BASE + v_index).unwrap();
-        let t = char::from_u32(T_BASE + t_index).unwrap();
+        // These are safe as codepoints are guaranteed to have correct values.
+        let l = unsafe { char::from_u32_unchecked(L_BASE + l_index) };
+        let v = unsafe { char::from_u32_unchecked(V_BASE + v_index) };
+        let t = unsafe { char::from_u32_unchecked(T_BASE + t_index) };
 
         vec.push(charcc::from_char_with_ccc(l, 0));
         vec.push(charcc::from_char_with_ccc(v, 0));
         vec.push(charcc::from_char_with_ccc(t, 0));
     } else {
-        let l = char::from_u32(L_BASE + l_index).unwrap();
-        let v = char::from_u32(V_BASE + v_index).unwrap();
+        // These are safe as codepoints are guaranteed to have correct values.
+        let l = unsafe { char::from_u32_unchecked(L_BASE + l_index) };
+        let v = unsafe { char::from_u32_unchecked(V_BASE + v_index) };
 
         vec.push(charcc::from_char_with_ccc(l, 0));
         vec.push(charcc::from_char_with_ccc(v, 0));
@@ -181,7 +183,8 @@ fn compose_hangul(c1: char, c2: char) -> Option<charcc> {
 
         let lv_index = l_index * N_COUNT + v_index * T_COUNT;
 
-        let lv = char::from_u32(S_BASE + lv_index).unwrap();
+        // This is safe as the codepoint is guaranteed to have correct value.
+        let lv = unsafe { char::from_u32_unchecked(S_BASE + lv_index) };
 
         return Some(charcc::from_char_with_ccc(lv, 0));
     }
@@ -193,7 +196,8 @@ fn compose_hangul(c1: char, c2: char) -> Option<charcc> {
     {
         let t_index = (c2 as u32) - T_BASE;
 
-        let lvt = char::from_u32((c1 as u32) + t_index).unwrap();
+        // This is safe as the codepoint is guaranteed to have correct value.
+        let lvt = unsafe { char::from_u32_unchecked((c1 as u32) + t_index) };
 
         return Some(charcc::from_char_with_ccc(lvt, 0));
     }

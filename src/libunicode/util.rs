@@ -44,7 +44,7 @@ impl charcc {
     /// functions and we would like to have static tables of charccs. The function will validate
     /// the layout and values of both codepoint and canonical combining class parts of charcc.
     pub fn from_u32(value: u32) -> charcc {
-        assert!(charcc::valid_charcc(value));
+        debug_assert!(charcc::valid_charcc(value));
 
         charcc(value)
     }
@@ -55,7 +55,7 @@ impl charcc {
     pub fn from_u32_slice<'a>(slice: &'a [u32]) -> &'a [charcc] {
         use std::mem;
 
-        assert!(slice.iter().all(|&v| charcc::valid_charcc(v)));
+        debug_assert!(slice.iter().all(|&v| charcc::valid_charcc(v)));
 
         // This is safe as 1) charcc and u32 have the same layout, 2) we have validated the slice.
         unsafe { mem::transmute(slice) }
@@ -80,7 +80,8 @@ impl charcc {
     pub fn to_char(self) -> char {
         use std::char;
 
-        char::from_u32(self.0 & 0x00FFFFFF).unwrap()
+        // This is safe as we validate character values when constructing charccs.
+        unsafe { char::from_u32_unchecked(self.0 & 0x00FFFFFF) }
     }
 
     /// Extract canonical combining class of charcc.
