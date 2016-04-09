@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 
 import argparse
+import math
 import os.path
 import pickle
+import random
 import sys
 import urllib2
 
@@ -31,6 +33,15 @@ commandline.add_argument('--compare',
     type=str,
     help='Compare derived identifier sets for the given pair of standards. \
           Report any changes and conflicts caused by migration between them.')
+
+commandline.add_argument('--output',
+    nargs=1,
+    metavar='what',
+    type=str,
+    default=['tables'],
+    help='Select what data to output. Supported choices are "tables" and \
+          "normalization_conformance". If this option is not specified then \
+          "tables" is assumed.')
 
 commandline_args = commandline.parse_args()
 
@@ -200,15 +211,14 @@ def parse_normalization_tests(data, assigned_codepoints):
             test_part.append(c)
         test_parts.append(test_part)
 
-    # Part 1 is special, it implies that every codepoint *not* enumerated there is normalized into itself
-    additional_test = []
-    chars_in_part1 = set(map(lambda test: test[0][0], test_parts[1]))
-    for c in assigned_codepoints:
-        if c not in chars_in_part1:
-            additional_test.append(([c], [c], [c], [c], [c]))
-    test_parts.append(additional_test)
+    nontrivial = [test for test_part in test_parts for test in test_part]
 
-    return [test for test_part in test_parts for test in test_part]
+    chars_in_part1 = set(map(lambda test: test[0][0], test_parts[1]))
+    trivial = [c for c in assigned_codepoints
+                 if c not in chars_in_part1
+                 and ((c < 0xD800) or (0xDFFF < c))]
+
+    return nontrivial, trivial
 
 def parse_property_list(data):
     """Extract special properties from PropList.txt"""
@@ -226,6 +236,27 @@ def parse_property_list(data):
         properties[prop].extend(parse_codepoint_range(codepoints))
 
     return properties
+
+def parse_quick_check_props(data):
+    """Extract Quick_Check properties from DerivedNormalizationProps.txt"""
+    props = {'NFD_QC': [], 'NFC_QC': [], 'NFKD_QC': [], 'NFKC_QC': []}
+
+    for line in data.split('\n'):
+        if not line or line.startswith('#'):
+            continue
+
+        row = line.split('#')[0].split(';')
+        kind = row[1].strip()
+
+        if kind not in props:
+            continue
+
+        codepoints = parse_codepoint_range(row[0])
+        value = row[2].strip()
+
+        props[kind].extend(map(lambda c: (c, value), codepoints))
+
+    return props
 
 def parse_codepoint_range(cp_range):
     """Covert codepoint range format used in UCD into a list of codepoints"""
@@ -513,9 +544,13 @@ def compute_jamo_decompositions(ucd):
 # Normalization tests
 #
 
-def run_normalization_tests(ucd, normalization_tests):
+def run_normalization_tests(ucd, nontrivial_tests, trivial_tests):
     """Run normalization self-tests from NormalizationTest.txt"""
-    for c1, c2, c3, c4, c5 in normalization_tests:
+    report_status('Running normalization self-tests...')
+
+    test_set = nontrivial_tests + [([c], [c], [c], [c], [c]) for c in trivial_tests]
+
+    for c1, c2, c3, c4, c5 in test_set:
         # NFC
         assert c2 == nfc(ucd, c1)
         assert c2 == nfc(ucd, c2)
@@ -552,11 +587,12 @@ class UCD:
     pass
 
 def prepare_unicode_character_data(version):
-    UnicodeData           = retrieve_ucd('UnicodeData.txt',           version)
-    HangulSyllableType    = retrieve_ucd('HangulSyllableType.txt',    version)
-    CompositionExclusions = retrieve_ucd('CompositionExclusions.txt', version)
-    PropList              = retrieve_ucd('PropList.txt',              version)
-    NormalizationTest     = retrieve_ucd('NormalizationTest.txt',     version)
+    UnicodeData               = retrieve_ucd('UnicodeData.txt',               version)
+    HangulSyllableType        = retrieve_ucd('HangulSyllableType.txt',        version)
+    CompositionExclusions     = retrieve_ucd('CompositionExclusions.txt',     version)
+    PropList                  = retrieve_ucd('PropList.txt',                  version)
+    NormalizationTest         = retrieve_ucd('NormalizationTest.txt',         version)
+    DerivedNormalizationProps = retrieve_ucd('DerivedNormalizationProps.txt', version)
 
     report_status('Parsing Unicode Character Data...')
 
@@ -566,7 +602,9 @@ def prepare_unicode_character_data(version):
     hangul_syllable_types = parse_hangul_syllable_types(HangulSyllableType)
     composition_exclusions = parse_composition_exclusions(CompositionExclusions)
     properties = parse_property_list(PropList)
-    normalization_tests = parse_normalization_tests(NormalizationTest, assigned_codepoints)
+    [normalization_tests_nontrivial,
+     normalization_tests_trivial] = parse_normalization_tests(NormalizationTest, assigned_codepoints)
+    quick_check = parse_quick_check_props(DerivedNormalizationProps)
 
     report_status('Precomputing derived properties and decompositions...')
 
@@ -584,12 +622,15 @@ def prepare_unicode_character_data(version):
     ucd.primary_composites           = compute_primary_composites(ucd)
 
     ucd.general_category = general_category
+    ucd.quick_check      = quick_check
     ucd.properties       = properties
     ucd.version          = version
     ucd.names            = names
 
-    report_status('Running normalization self-tests...')
-    run_normalization_tests(ucd, normalization_tests)
+    ucd.normalization_tests_nontrivial = normalization_tests_nontrivial
+    ucd.normalization_tests_trivial = normalization_tests_trivial
+
+    run_normalization_tests(ucd, normalization_tests_nontrivial, normalization_tests_trivial)
 
     return ucd
 
@@ -840,10 +881,11 @@ def emit_unicode_tables(cs):
     emit_header()
     emit_unicode_version(cs.ucd.version)
     emit_sash_identifiers(cs)
+    emit_unicode_properties(cs.ucd)
 
 def emit_header():
     print_data("""\
-// Copyright (c) 2015, ilammy
+// Copyright (c) 2016, ilammy
 //
 // Licensed under MIT license (see LICENSE file in the root directory).
 // This file may be copied, distributed, and modified only in accordance
@@ -853,19 +895,22 @@ def emit_header():
 // THIS FILE IS AUTOMATICALLY GENERATED. DO NOT EDIT IT DIRECTLY. PLEASE.
 //
 
-//! Unicode support for Sash implementation.
+//! Unicode character data tables.
 //!
-//! This module contains definitions of various Unicode character properties, algorithms, etc.
-//! which are used internally by the implementation. It is intended to be a minimal sufficient
-//! subset of some proper full Unicode support library, so as to consume minimum amount of space.
-//! Full Unicode support requires multiple megabyte-sized lookup tables which are not actually
-//! needed in limited contexts such as programming language implementations.
+//! This module contains mostly boring data tables which are automatically generated and then
+//! used by human-written code for actual algorithm implementation.
+//!
+//! - *sash_identifiers*: definitions of Sash identifier sets
+//! - *properties*: Unicode character properties
+//! - *composition_mappings*: composition mappings for normalization
+//! - *decomposition_mappings*: decomposition mappings for normalization
+//! - *quick_check*: Quick_Check exclusion tables
 """)
 
 def emit_unicode_version(version):
     major, minor, patch = map(int, version.split('.'))
     print_data("""
-/// Version of the Unicode Standard this module is based upon.
+/// Version of the Unicode Standard this crate is based upon.
 pub const UNICODE_VERSION: (u8, u8, u8) = (%d, %d, %d);
 """ % (major, minor, patch))
 
@@ -1062,11 +1107,11 @@ def emit_category_table_ascii(categories):
     print_data(split_into_lines(map(render, cats), separator=',', indent=8, max_length=99))
 
 def emit_category_table_unicode(categories):
-    table = convert_to_bsearch_table(categories)
-    table = filter(lambda range: range[2] != 0, table)
+    table = pack_character_ranges(dict(enumerate(categories)))
+    table = filter(lambda range: range[1] != 0, table)
 
     def render(range):
-        low, high, cat = range
+        (low, high), cat = range
         return "('\\u{%04X}', '\\u{%04X}', %2d)" % (low, high, cat)
 
     print_data(split_into_lines(map(render, table), separator=',', indent=8, max_length=99))
@@ -1088,24 +1133,847 @@ def split_into_lines(seq, separator, indent, max_length):
 
     return '\n'.join(map(lambda s: s.rstrip(), lines))
 
-def convert_to_bsearch_table(categories):
+def pack_character_ranges(mapping):
     table = []
 
     start, end, current = None, None, None
 
-    for c, cat in enumerate(categories):
+    for c in xrange(0, 0x110000):
+        v = mapping.get(c, None)
+
         if start is None:
-            start, end, current = c, c, cat
-        elif cat == current:
+            start, end, current = c, c, v
+        elif v == current:
             end = c
         else:
-            table.append((start, end, current))
-            start, end, current = c, c, cat
+            table.append(((start, end), current))
+            start, end, current = c, c, v
 
     if start is not None:
-        table.append((start, end, current))
+        table.append(((start, end), current))
 
     return table
+
+def convert_to_trie(mapping, factor):
+    stride = 2**factor
+    buckets = 0x110000 / stride
+
+    trie = [None] * buckets
+    for i in xrange(buckets):
+        bucket = [None] * stride
+        not_empty = False
+
+        for j in xrange(stride):
+            c = i * stride + j
+            if c in mapping:
+                bucket[j] = mapping[c]
+                not_empty = True
+
+        if not_empty:
+            trie[i] = bucket
+
+    return trie
+
+def optimize_trie_by_size(mapping, unpack, estimate_size, starting_factor):
+    def calculate_data(factor):
+        trie = convert_to_trie(mapping, factor)
+        data = unpack(trie, factor)
+        size = estimate_size(data)
+        return data, factor, size
+
+    def size(triple):
+        data, factor, size = triple
+        return size
+
+    factor = starting_factor
+    prev = calculate_data(factor - 1)
+    curr = calculate_data(factor)
+    next = calculate_data(factor + 1)
+
+    while not((size(prev) >= size(curr)) and (size(curr) <= size(next))):
+        if (size(prev) <= size(curr)) and (size(curr) <= size(next)):
+            factor -= 1
+            prev, curr, next = calculate_data(factor - 1), prev, curr
+        elif (size(prev) >= size(curr)) and (size(curr) >= size(next)):
+            factor += 1
+            prev, curr, next = curr, next, calculate_data(factor + 1)
+        else:
+            raise RuntimeError("Ugh, local maximum at factor %d" % factor)
+
+    return curr
+
+def emit_unicode_properties(ucd):
+    emit_canonical_combining_class(ucd)
+    emit_composition_mappings(ucd)
+    emit_decomposition_mappings(ucd)
+    emit_quick_check(ucd)
+
+def emit_canonical_combining_class(ucd):
+    report_status("\nOptimizing CCC trie...")
+    (indices, buckets), factor, size = optimize_ccc_trie(ucd.canonical_combining_class)
+    report_status("Done. Factor %d, estimated size %d KB" % (factor, size / 1024))
+
+    print_data("""
+/// Unicode character properties.
+///
+/// This module contains definitions of various Unicode character properties. See [Unicode Standard
+/// Annex #44][UAX-44] for precise description of the Unicode character database and the properties
+/// it contains.
+///
+/// [UAX-44]: http://www.unicode.org/reports/tr44/
+pub mod properties {
+    /// Get canonical combining class of a character `c`.
+    ///
+    /// This is the _Canonical_Combining_Class_ property in the UCD. Its value is used in Canonical
+    /// Ordering Algorithm and all over the Unicode normalization algorithms.
+    pub fn canonical_combining_class(c: char) -> u8 {
+        // We are using a trie for CCC lookup.
+        //
+        //        unusued       index      offset
+        //      00000000000 0000000000110 01001111 = U+064F ARABIC DAMMA (CCC 31)
+        //                        |          |
+        //                        |          +-----------------------------+
+        //         +--------------+                                        |
+        //         |                                                       v
+        //         |                                       0              79              255
+        //         |    0 [ 0 ]                       0 [[ 0 ]                           [ 0 ]]
+        //         |
+        //         |    5 [ 3 ]                       3 [[ 0 ]     [ 0 ] [ 0 ] [ 0 ]     [ 0 ]]
+        //         +--> 6 [ 4 ] --------------------> 4 [[ 0 ]     [30 ] [31 ] [32 ]     [ 0 ]]
+        //              7 [ 5 ]                       5 [[ 0 ]     [ 0 ] [ 0 ] [ 0 ]     [ 0 ]]
+        //
+        //           8191 [ 0 ]                       N [[ 0 ]                           [ 0 ]]
+        //
+        // This is better than binary search as it needs less cache misses to acquire the value
+        // (exactly 2 vs. average 8). A hash table may be better as it needs only one cache miss,
+        // but it shows the same speed as the trie with perfect hashing. It is even slower due
+        // to conditionals if the hashing is not perfect. On the other hand, the trie is a simple
+        // stream of loads and arithmetics and it nicely handles the most common case of CCC zero.
+
+        let c = c as u32;
+
+        let index  = (c >> CCC_FACTOR) as usize;
+        let offset = (c & ((1 << CCC_FACTOR) - 1)) as usize;
+        let row    = CCC_INDICES[index] as usize;
+        let bucket = (row << CCC_FACTOR) + offset;
+
+        return CCC_BUCKETS[bucket];
+    }
+
+    /// Length of trie suffix.
+    const CCC_FACTOR: u8 = %d;
+
+    /// Lookup table of indices.
+    const CCC_INDICES: &'static [u8] = &[
+""" % factor)
+    emit_ccc_indices(indices)
+    print_data("""
+    ];
+
+    /// Lookup table of bucket values.
+    const CCC_BUCKETS: &'static [u8] = &[
+""")
+    emit_ccc_buckets(buckets)
+    print_data("""
+    ];
+}
+""")
+
+def optimize_ccc_trie(mapping):
+    def unpack(trie, factor):
+        indices = [0] * len(trie)
+        buckets = []
+        bucket_count = 0
+
+        for index, bucket in enumerate(trie):
+            if bucket:
+                buckets.extend(map(lambda ccc: ccc if ccc is not None else 0, bucket))
+                bucket_count += 1
+                indices[index] = bucket_count
+
+        # The default value for CCC is zero, so we can avoid using sentinel values and simply
+        # map all unassigned code points into the first bucket which will be full of zeros
+        buckets = [0] * (2**factor) + buckets
+
+        return indices, buckets
+
+    def estimate_size(unpacked):
+        indices, buckets = unpacked
+        return len(indices) + len(buckets)
+
+    return optimize_trie_by_size(mapping, unpack, estimate_size, starting_factor=8)
+
+def emit_ccc_indices(indices):
+    def render(index):
+        return '%2d' % index
+
+    print_data(split_into_lines(map(render, indices), separator=',', indent=8, max_length=99))
+
+def emit_ccc_buckets(buckets):
+    def render(ccc):
+        return '%3d' % ccc
+
+    print_data(split_into_lines(map(render, buckets), separator=',', indent=8, max_length=99))
+
+def emit_composition_mappings(ucd):
+    primary_composites = filter(lambda m: m[2] not in ucd.precomposed_hangul_syllables,
+                                map(lambda m: (m[0][0], m[0][1], m[1]),
+                                    ucd.primary_composites.iteritems()))
+
+    report_status("\nOptimizing composition hash table...")
+
+    if True:                # Using good precomputed values for Unicode 8.0.0
+        buckets = 4096
+        n1, n2, n3 = 61463, 17929, 60887
+        hash, source = primary_composite_hash_function(n1, n2, n3)
+        table = construct_primary_composite_hash_table(primary_composites, hash, buckets)
+        c_lookups, nc_lookups = \
+            analyze_primary_composite_hash_table(table, primary_composites, hash, buckets)
+    else:
+        table, source, ((n1, n2, n3), (c_lookups, nc_lookups)) = \
+            optimize_primary_composite_hash_table(primary_composites)
+        buckets = len(table)
+
+    report_status("Done. Estimated size %d KB" % ((12 * buckets) / 1024))
+
+    filled = len(primary_composites)
+    c_total = sum(map(lambda v: v[0] * v[1], c_lookups.iteritems()))
+    nc_total = sum(map(lambda v: v[0] * v[1], nc_lookups.iteritems()))
+
+    report_status("Used primes: %d, %d, %d" % (n1, n2, n3))
+    report_status("Load factor: %d/%d = %.2f%%" % (filled, buckets, 100.0 * filled / buckets))
+
+    report_status("Composites, average lookups: %.2f" % (1.0 * c_total / filled))
+    report_status("Lookup distribution:")
+    for number, count in sorted(c_lookups.iteritems()):
+        report_status("\t%2d -> %-3d = %5.2f%%" % (number, count, 100.0 * count / filled))
+
+    report_status("Non-composite, average lookups (estimated): %.2f" % (1.0 * nc_total / buckets))
+    report_status("Lookup distribution:")
+    for number, count in sorted(nc_lookups.iteritems()):
+        report_status("\t%2d -> %-4d = %5.2f%%" % (number, count, 100.0 * count / buckets))
+
+    print_data("""
+/// Composition mappings.
+///
+/// This module contains definitions of derived properties used during the composition stage
+/// of Unicode normalization algorithms.
+pub mod composition_mappings {
+    use util::charcc;
+
+    /// Get a primary composite of `c1` of `c2` if it exists.
+    ///
+    /// A Primary Composite (D114) is a Canonical Decomposable Character (D69) which is not
+    /// a Full Composition Exclusion (D113).
+    ///
+    /// This function does not include support for precomposed Hangul syllables (D132),
+    /// they must be computed programmatically.
+    pub fn primary(c1: char, c2: char) -> Option<charcc> {
+        let c1 = c1 as u32;
+        let c2 = c2 as u32;
+
+        let mut index = hash(c1, c2) % HASH_TABLE_BUCKET_COUNT;
+
+        for _ in 0..HASH_TABLE_MAX_COLLISIONS {
+            match PRIMARY_COMPOSITION_HASH_TABLE[index as usize] {
+                MISSING => {
+                    return None;
+                }
+                (p1, p2, c3) if (p1 == c1) && (p2 == c2) => {
+                    return Some(charcc::from_u32(c3));
+                }
+                _ => {
+                    index = (index + 1) % HASH_TABLE_BUCKET_COUNT;
+                }
+            }
+        }
+
+        return None;
+    }
+""")
+    print_data(source)
+    print_data("""
+    /// Maximum number of collisions in `PRIMARY_COMPOSITION_HASH_TABLE`.
+    const HASH_TABLE_MAX_COLLISIONS: u8 = %d;
+
+    /// Bucket count in `PRIMARY_COMPOSITION_HASH_TABLE`.
+    const HASH_TABLE_BUCKET_COUNT: u32 = %d;
+
+    /// Sentinel value for hash table that indicates an empty bucket.
+    /// It is guaranteed to be not equal to any valid character pair.
+    const MISSING: (u32, u32, u32) = (0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF);
+
+    /// Hash table buckets for `primary()`. They contain all Primary Composite mappings
+    /// except for precomposed Hangul syllables.
+    const PRIMARY_COMPOSITION_HASH_TABLE: &'static [(u32, u32, u32)] = &[
+""" % (max(c_lookups), buckets))
+    emit_primary_composition_hash_table(ucd, table)
+    print_data("""
+    ];
+}
+""")
+
+def charcc(ucd, c):
+    ccc = ucd.canonical_combining_class.get(c, 0)
+    return (ccc << 24) | c
+
+def emit_primary_composition_hash_table(ucd, table):
+    def render(entry):
+        if entry is None:
+            return 'MISSING'
+        else:
+            c1, c2, c3 = entry
+            c3 = charcc(ucd, c3)
+            return "(0x%04X,  0x%04X, 0x%04X)" % (c1, c2, c3)
+
+    print_data(split_into_lines(map(render, table), separator=',', indent=8, max_length=99))
+
+def primary_composite_hash_function(n1, n2, n3):
+    def hash(c1, c2):
+        r = (n3 + c1) & 0xFFFFFFFF
+        r = (n2 * r)  & 0xFFFFFFFF
+        r = (c2 + r)  & 0xFFFFFFFF
+        r = (n1 * r)  & 0xFFFFFFFF
+        return r
+
+    source = """
+    /// Compute hash function of a code point pair.
+    fn hash(c1: u32, c2: u32) -> u32 {
+        let (n1, n2, n3) = (%d, %d, %d);
+
+        return c1.wrapping_add(n3)  // n1 * (n2 * (n3 + c1) + c2)
+                 .wrapping_mul(n2)
+                 .wrapping_add(c2)
+                 .wrapping_mul(n1);
+    }
+"""
+    return hash, source % (n1, n2, n3)
+
+def construct_primary_composite_hash_table(primary_composites, hash, bucket_count):
+    table = [None] * bucket_count
+
+    for c1, c2, c3 in primary_composites:
+        index = hash(c1, c2) % bucket_count
+
+        while table[index] is not None:
+            index = (index + 1) % bucket_count
+
+        table[index] = c1, c2, c3
+
+    return table
+
+def analyze_primary_composite_hash_table(table, primary_composites, hash, bucket_count):
+    c_lookups = {}
+
+    for c1, c2, c3 in primary_composites:
+        index = hash(c1, c2) % bucket_count
+        for_this = 1
+
+        while (table[index] is not None) and (table[index] != (c1, c2, c3)):
+            index = (index + 1) % bucket_count
+            for_this += 1
+
+        c_lookups[for_this] = c_lookups.get(for_this, 0) + 1
+
+    # Unfortunately, it's not an option to directly probe all 1099511627776
+    # possible Unicode pairs, so we'll have to deal with composites only.
+    # Though, we can estimate lookup statistics for other character pairs,
+    # assuming that these pairs are distributed evenly over the hash table.
+
+    max_lookups = max(c_lookups)
+
+    nc_lookups = {}
+
+    for start_index in xrange(0, bucket_count):
+        for_this = 1
+        index = start_index
+
+        while (table[index] is not None) and (for_this < max_lookups):
+            index = (index + 1) % bucket_count
+            for_this += 1
+
+        nc_lookups[for_this] = nc_lookups.get(for_this, 0) + 1
+
+    return c_lookups, nc_lookups
+
+def optimize_primary_composite_hash_table(primary_composites):
+    bucket_count = 4096
+
+    def prime_number(n):
+        if (n % 2) == 0:
+            return n == 2
+        for p in xrange(3, int(math.sqrt(n) + 1), 2):
+            if (n % p) == 0:
+                return False
+        return True
+
+    primes = filter(prime_number, xrange(3, 2**16, 2))
+
+    best_nums = None
+    best_value = 2**32
+    best_lookups = None
+
+    for i in xrange(5000):
+        n1, n2, n3 = random.sample(primes, 3)
+
+        hash, source = primary_composite_hash_function(n1, n2, n3)
+
+        table = construct_primary_composite_hash_table(primary_composites, hash, bucket_count)
+
+        c_lookups, nc_lookups = \
+            analyze_primary_composite_hash_table(table, primary_composites, hash, bucket_count)
+
+        value = sum(map(lambda v: v[0] * v[1], c_lookups.iteritems())) \
+              + sum(map(lambda v: v[0] * v[1], nc_lookups.iteritems()))
+
+        if value < best_value:
+            best_nums = n1, n2, n3
+            best_value = value
+            best_lookups = c_lookups, nc_lookups
+
+    return table, source, (best_nums, best_lookups)
+
+def emit_decomposition_mappings(ucd):
+    report_status("\nOptimizing decomposition trie...")
+    mapping = compute_joint_decomposition_mapping(ucd)
+    (indices, buckets, characters), factor, size = optimize_decomposition_trie(mapping)
+    report_status("Done. Factor %d, estimated size %d KB" % (factor, size / 1024))
+
+    print_data("""
+/// Decomposition mappings.
+///
+/// This module contains definitions of derived properties used during the decomposition stage
+/// of Unicode normalization algorithms.
+pub mod decomposition_mappings {
+    use util::charcc;
+
+    // We are using a similar trie approach here as for the Canonical Combining Classes. Data
+    // for canonical and compatibility decomposition is packed into a single trie, indexed by
+    // code point values. The buckets contain offset and length of the decomposition in a big
+    // table of characters. If there is no decomposition then its length is zero.
+    //
+    // The tables do not contain data for Hangul syllables as it is quite bulky, so it should
+    // be computed on the fly using the algorithms provided in the standard.
+
+    /// Get full canonical decomposition of character `c`.
+    ///
+    /// Returns Some slice if the decomposition is not trivial (not equal to the character itself).
+    /// Otherwise returns None.
+    ///
+    /// This function does not include support for precomposed Hangul syllables (D132) and will
+    /// return None for such characters. Decompositions for them must be computed programmatically.
+    pub fn canonical_mapping(c: char) -> Option<&'static [charcc]> {
+        let c = c as u32;
+
+        let index  = (c >> DECOMPOSITION_FACTOR) as usize;
+        let offset = (c & ((1 << DECOMPOSITION_FACTOR) - 1)) as usize;
+        let row    = DECOMPOSITION_INDICES[index] as usize;
+        let bucket = (row << DECOMPOSITION_FACTOR) + offset;
+
+        let (address, _, length, _) = DECOMPOSITION_BUCKETS[bucket];
+
+        if length == 0 {
+            return None;
+        }
+
+        let (address, length) = (address as usize, length as usize);
+
+        return Some(charcc::from_u32_slice(&DECOMPOSITION_DATA[address..(address + length)]));
+    }
+
+    /// Get full compatibility decomposition of character `c`.
+    ///
+    /// Returns Some slice if the decomposition is not trivial (not equal to the character itself).
+    /// Otherwise returns None.
+    ///
+    /// This function does not include support for precomposed Hangul syllables (D132) and will
+    /// return None for such characters. Decompositions for them must be computed programmatically.
+    pub fn compatibility_mapping(c: char) -> Option<&'static [charcc]> {
+        let c = c as u32;
+
+        let index  = (c >> DECOMPOSITION_FACTOR) as usize;
+        let offset = (c & ((1 << DECOMPOSITION_FACTOR) - 1)) as usize;
+        let row    = DECOMPOSITION_INDICES[index] as usize;
+        let bucket = (row << DECOMPOSITION_FACTOR) + offset;
+
+        let (_, address, _, length) = DECOMPOSITION_BUCKETS[bucket];
+
+        if length == 0 {
+            return None;
+        }
+
+        let (address, length) = (address as usize, length as usize);
+
+        return Some(charcc::from_u32_slice(&DECOMPOSITION_DATA[address..(address + length)]));
+    }
+
+    /// Length of trie suffix.
+    const DECOMPOSITION_FACTOR: u8 = %d;
+
+    /// Lookup table of indices.
+    const DECOMPOSITION_INDICES: &'static [u8] = &[
+""" % factor)
+    emit_decomposition_indices(indices)
+    print_data("""
+    ];
+
+    /// Lookup table of buckets.
+    const DECOMPOSITION_BUCKETS: &'static [(u16, u16, u8, u8)] = &[
+""")
+    emit_decomposition_buckets(buckets)
+    print_data("""
+    ];
+
+    /// Actual decomposition character data blob.
+    const DECOMPOSITION_DATA: &'static [u32] = &[
+""")
+    emit_decomposition_characters(ucd, characters)
+    print_data("""
+    ];
+}
+""")
+
+def compute_joint_decomposition_mapping(ucd):
+    mapping = {}
+
+    mapped_chars_without_hangul = (range(0x0000, 0xAC00)
+                                +  range(0xD7B0, 0xD800)
+                                +  range(0xC000, 0x110000))
+
+    for c in mapped_chars_without_hangul:
+        canonical = canonical_decomposition(ucd, [c])
+        compatibility = compatibility_decomposition(ucd, [c])
+
+        if canonical == [c]:
+            canonical = None
+
+        if compatibility == [c]:
+            compatibility = None
+
+        if canonical or compatibility:
+            mapping[c] = (canonical, compatibility)
+
+    return mapping
+
+def optimize_decomposition_trie(mapping):
+    def unpack(trie, factor):
+        indices = [0] * len(trie)
+        buckets = []
+        bucket_count = 0
+
+        # Unpack trie buckets and indices.
+        # We'll keep decompositions as lists for now.
+
+        for index, bucket in enumerate(trie):
+            if bucket:
+                bucket_count += 1
+                indices[index] = bucket_count
+
+                for entry in bucket:
+                    if entry is None:
+                        buckets.append((None, None))
+                    else:
+                        buckets.append(entry)
+
+        buckets = [(None, None)] * (2**factor) + buckets
+
+        # Now enumerate all distinct decompositions, concatenate their
+        # character representations into a big list, and note where the
+        # decompositions are in this list and their lenght as well
+
+        decompositions = {None: (0, 0)}
+        characters = []
+
+        def add_decomposition(decomposition):
+            if decomposition:
+                decomposition = tuple(decomposition)
+                if decomposition not in decompositions:
+                    decompositions[decomposition] = len(characters), len(decomposition)
+                    characters.extend(decomposition)
+
+        for canonical, compatibility in buckets:
+            add_decomposition(canonical)
+            add_decomposition(compatibility)
+
+        # Uodate the bucket data, replacing actual decompositions-as-lists
+        # with offset/length pairs from the previously computed mapping.
+        # Note that we have placed an empty decomposition there beforehand.
+
+        def expand_bucket(bucket):
+            c, k = bucket
+            c_offset, c_length = decompositions[tuple(c) if c else None]
+            k_offset, k_length = decompositions[tuple(k) if k else None]
+            return c_offset, k_offset, c_length, k_length
+
+        buckets = map(expand_bucket, buckets)
+
+        return indices, buckets, characters
+
+    def estimate_size(unpacked):
+        indices, buckets, characters = unpacked
+        return (len(indices) * (1 if len(indices) < 256 else 2)
+            + 6 * len(buckets)
+            + 4 * len(characters))
+
+    return optimize_trie_by_size(mapping, unpack, estimate_size, starting_factor=7)
+
+def emit_decomposition_indices(indices):
+    def render(index):
+        return '%3d' % index
+
+    print_data(split_into_lines(map(render, indices), separator=',', indent=6, max_length=99))
+
+def emit_decomposition_buckets(buckets):
+    def render(bucket):
+        return '(%5d, %5d, %2d, %2d)' % bucket
+
+    print_data(split_into_lines(map(render, buckets), separator=',', indent=8, max_length=99))
+
+def emit_decomposition_characters(ucd, decompositions):
+    def render_charcc(c):
+        return "0x%04X" % charcc(ucd, c)
+
+    print_data(split_into_lines(map(render_charcc, decompositions), separator=',', indent=8, max_length=99))
+
+def emit_quick_check(ucd):
+    report_status("\nOptimizing Quick_Check trie...")
+    mapping = compute_joint_quick_check_mapping(ucd)
+    (indices, buckets), factor, size = optimize_quick_check_trie(mapping)
+    report_status("Done. Factor %d, estimated size %d KB" % (factor, size / 1024))
+
+    print_data("""
+/// Quick_Check exclusions.
+///
+/// This module provides predicates used for detecting normalization forms. These are used to
+/// check whether text is already normalized and does not need additional processing.
+pub mod quick_check {
+    /// Filter characters that cannot occur in NFC-normalized text.
+    ///
+    /// Returns true for code points that have Quick_Check(NFC) values NO or MAYBE.
+    ///
+    /// Strictly speaking, MAYBE characters can occur is NFC-normalized text, but to confirm this
+    /// we need to actually normalize the text, so it does not matter for us.
+    pub fn not_allowed_in_nfc(c: char) -> bool {
+        (quick_check_flags(c) & QCC_MASK) != 0
+    }
+
+    /// Filter characters that cannot occur in NFD-normalized text.
+    ///
+    /// Returns true for code points that have Quick_Check(NFD) value NO.
+    pub fn not_allowed_in_nfd(c: char) -> bool {
+        (quick_check_flags(c) & QCD_MASK) != 0
+    }
+
+    /// Filter characters that cannot occur in NFC-normalized text.
+    ///
+    /// Returns true for code points that have Quick_Check(NFKC) values NO or MAYBE.
+    ///
+    /// Strictly speaking, MAYBE characters can occur is NFKC-normalized text, but to confirm this
+    /// we need to actually normalize the text, so it does not matter for us.
+    pub fn not_allowed_in_nfkc(c: char) -> bool {
+        (quick_check_flags(c) & QKC_MASK) != 0
+    }
+
+    /// Filter characters that cannot occur in NFKD-normalized text.
+    ///
+    /// Returns true for code points that have Quick_Check(NFKD) value NO.
+    pub fn not_allowed_in_nfkd(c: char) -> bool {
+        (quick_check_flags(c) & QKD_MASK) != 0
+    }
+
+    /// Lookup Quick_Check flags for a given character.
+    fn quick_check_flags(c: char) -> u8 {
+        let c = c as u32;
+
+        let index  = (c >> QUICK_CHECK_FACTOR) as usize;
+        let offset = (c & ((1 << QUICK_CHECK_FACTOR) - 1)) as usize;
+        let row    = QUICK_CHECK_INDICES[index] as usize;
+        let bucket = (row << QUICK_CHECK_FACTOR) + offset;
+
+        return QUICK_CHECK_BUCKETS[bucket];
+    }
+
+    // See 'mod properties' for an explanation of how tries work.
+
+    const QCC_MASK: u8 = 0x01;
+    const QCD_MASK: u8 = 0x02;
+    const QKC_MASK: u8 = 0x04;
+    const QKD_MASK: u8 = 0x08;
+
+    /// Length of the trie suffix.
+    const QUICK_CHECK_FACTOR: u8 = %d;
+
+    /// Quick check trie indices.
+    const QUICK_CHECK_INDICES: &'static [u8] = &[
+""" % factor)
+    emit_quick_check_indices(indices)
+    print_data("""
+    ];
+
+    /// Quick check trie data.
+    const QUICK_CHECK_BUCKETS: &'static [u8] = &[
+""")
+    emit_quick_check_buckets(buckets)
+    print_data("""
+    ];
+}
+""")
+
+def compute_joint_quick_check_mapping(ucd):
+    qc_nfc  = set(map(lambda e: e[0], ucd.quick_check['NFC_QC']))
+    qc_nfd  = set(map(lambda e: e[0], ucd.quick_check['NFD_QC']))
+    qc_nfkc = set(map(lambda e: e[0], ucd.quick_check['NFKC_QC']))
+    qc_nfkd = set(map(lambda e: e[0], ucd.quick_check['NFKD_QC']))
+
+    mapping = {}
+
+    for c in xrange(0, 0x110000):
+        in_nfc  = c in qc_nfc
+        in_nfd  = c in qc_nfd
+        in_nfkc = c in qc_nfkc
+        in_nfkd = c in qc_nfkd
+
+        if in_nfc or in_nfd or in_nfkc or in_nfkc:
+            mapping[c] = in_nfc, in_nfd, in_nfkc, in_nfkd
+
+    return mapping
+
+def optimize_quick_check_trie(mapping):
+    def unpack(trie, factor):
+        indices = [0] * len(trie)
+        buckets = [[(False, False, False, False)] * (2**factor)]
+
+        for index, bucket in enumerate(trie):
+            if bucket:
+                bucket = map(lambda e: (False, False, False, False) if e is None else e, bucket)
+
+                if bucket in buckets:
+                    indices[index] = buckets.index(bucket)
+                else:
+                    indices[index] = len(buckets)
+                    buckets.append(bucket)
+
+        # Flatten the list
+        buckets = sum(buckets, [])
+
+        return indices, buckets
+
+    def estimate_size(unpacked):
+        indices, buckets = unpacked
+        return len(indices) + len(buckets)
+
+    return optimize_trie_by_size(mapping, unpack, estimate_size, starting_factor=8)
+
+def emit_quick_check_indices(indices):
+    def render(index):
+        return '%3d' % index
+
+    print_data(split_into_lines(map(render, indices), separator=',', indent=8, max_length=99))
+
+def emit_quick_check_buckets(buckets):
+    def render(qc):
+        value = 0
+        nfc, nfd, nfkc, nfkd = qc
+        if nfc:  value |= 0x01
+        if nfd:  value |= 0x02
+        if nfkc: value |= 0x04
+        if nfkd: value |= 0x08
+        return '%2d' % value
+
+    print_data(split_into_lines(map(render, buckets), separator=',', indent=8, max_length=99))
+
+def emit_normalization_tests(ucd):
+    print_data("""\
+// Copyright (c) 2016, ilammy
+//
+// Licensed under MIT license (see LICENSE file in the root directory).
+// This file may be copied, distributed, and modified only in accordance
+// with the terms specified by this license.
+
+//
+// THIS FILE IS AUTOMATICALLY GENERATED. DO NOT EDIT IT DIRECTLY. PLEASE.
+//
+
+//! Unicode normalization tests.
+//!
+//! This module contains normalization self-tests based on NormalizationTest.txt from UCD.
+
+extern crate unicode;
+
+use std::char;
+use std::string::ToString;
+use unicode::normalization;
+
+#[test]
+fn conformance_1() {
+    for &(s1, s2, s3, s4, s5) in EXPLICIT_STRINGS {
+        assert_eq!(s2, normalization::nfc(s1));
+        assert_eq!(s2, normalization::nfc(s2));
+        assert_eq!(s2, normalization::nfc(s3));
+        assert_eq!(s4, normalization::nfc(s4));
+        assert_eq!(s4, normalization::nfc(s5));
+
+        assert_eq!(s3, normalization::nfd(s1));
+        assert_eq!(s3, normalization::nfd(s2));
+        assert_eq!(s3, normalization::nfd(s3));
+        assert_eq!(s5, normalization::nfd(s4));
+        assert_eq!(s5, normalization::nfd(s5));
+
+        assert_eq!(s4, normalization::nfkc(s1));
+        assert_eq!(s4, normalization::nfkc(s2));
+        assert_eq!(s4, normalization::nfkc(s3));
+        assert_eq!(s4, normalization::nfkc(s4));
+        assert_eq!(s4, normalization::nfkc(s5));
+
+        assert_eq!(s5, normalization::nfkd(s1));
+        assert_eq!(s5, normalization::nfkd(s2));
+        assert_eq!(s5, normalization::nfkd(s3));
+        assert_eq!(s5, normalization::nfkd(s4));
+        assert_eq!(s5, normalization::nfkd(s5));
+    }
+}
+
+#[test]
+fn conformance_2() {
+    for &(from, to) in TRIVIAL_RANGES {
+        for n in (from as u32)..(to as u32 + 1) {
+            let c = char::from_u32(n).unwrap();
+            let s = &c.to_string()[..];
+
+            assert_eq!(s, normalization::nfc(s));
+            assert_eq!(s, normalization::nfd(s));
+            assert_eq!(s, normalization::nfkc(s));
+            assert_eq!(s, normalization::nfkd(s));
+        }
+    }
+}
+
+const EXPLICIT_STRINGS: &'static [(&'static str, &'static str, &'static str, &'static str, &'static str)] = &[
+""")
+    def render_string(s):
+        return '"' + ''.join(map(lambda c: '\\u{%04X}' % c, s)) + '"'
+
+    for s1, s2, s3, s4, s5 in ucd.normalization_tests_nontrivial:
+        print_data("    (%s, %s, %s, %s, %s),\n" % tuple(map(render_string, [s1, s2, s3, s4, s5])))
+
+    print_data("""
+];
+
+const TRIVIAL_RANGES: &'static [(char, char)] = &[
+""")
+
+    table = pack_character_ranges({c: True for c in ucd.normalization_tests_trivial})
+    table = filter(lambda r: r[1] is True, table)
+
+    def render_range(r):
+        (low, high), _ = r
+        return "('\\u{%04X}', '\\u{%04X}')" % (low, high)
+
+    print_data(split_into_lines(map(render_range, table), separator=',', indent=4, max_length=99))
+
+    print_data("""
+];
+""")
 
 # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 #
@@ -1158,6 +2026,13 @@ if commandline_args.compare:
     if perfect_sets:
         report_status('All character sets are fine.')
 else:
+    # Checking output type
+    output = commandline_args.output[-1]
+    if output not in ['tables', 'normalization_conformance']:
+        report_status('')
+        report_status("Unknown --output option: %s" % output)
+        sys.exit(-1)
+
     # Generating tables for a given version
     if commandline_args.version == 'latest':
         version = latest_version
@@ -1166,6 +2041,10 @@ else:
 
     ucd = get_unicode_character_data(version)
 
-    cs = compute_character_sets(ucd)
+    if output == 'tables':
+        cs = compute_character_sets(ucd)
 
-    emit_unicode_tables(cs)
+        emit_unicode_tables(cs)
+
+    if output == 'normalization_conformance':
+        emit_normalization_tests(ucd)
