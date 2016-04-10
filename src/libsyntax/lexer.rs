@@ -1488,6 +1488,7 @@ impl<'a> StringScanner<'a> {
 
     /// Scan over a word identifier which starts with `initial` character.
     fn scan_identifier_word(&mut self, initial: char) -> Token {
+        use unicode::normalization;
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, WORD_CONTINUE, MARK_START, QUOTE_START};
         use self::IdentifierSpecials::{Terminator, Dot, Digit, IncorrectUnicodeEscape,
@@ -1554,7 +1555,7 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        return Token::Identifier(self.intern_string(value));
+        return Token::Identifier(self.intern_string(normalization::nfkc(&value)));
     }
 
     /// Scan over a standalone word identifier or maybe an implicit symbol which starts
@@ -1576,6 +1577,7 @@ impl<'a> StringScanner<'a> {
 
     /// Scan over a mark identifier which starts with `initial` character.
     fn scan_identifier_mark(&mut self, initial: char) -> Token {
+        use unicode::normalization;
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, MARK_START, MARK_CONTINUE, QUOTE_START};
         use self::IdentifierSpecials::{Terminator, Dot, Digit, IncorrectUnicodeEscape,
@@ -1653,11 +1655,12 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        return Token::Identifier(self.intern_string(value));
+        return Token::Identifier(self.intern_string(normalization::nfkc(&value)));
     }
 
     /// Scan over a quote identifier which starts with `initial` character.
     fn scan_identifier_quote(&mut self, initial: char) -> Token {
+        use unicode::normalization;
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, MARK_START, QUOTE_START, QUOTE_CONTINUE};
         use self::IdentifierSpecials::{Terminator, Dot, Digit, IncorrectUnicodeEscape,
@@ -1718,7 +1721,7 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        return Token::Identifier(self.intern_string(value));
+        return Token::Identifier(self.intern_string(normalization::nfkc(&value)));
     }
 
     /// Maybe scan over an optional type suffix of literal tokens.
@@ -2182,6 +2185,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn doc_comment_no_normalization_occurs() {
+        check! {
+            ("/// \u{212B}\u{2000}\u{00C5} \u{0041}\u{030A}"            => DocComment("/// \u{212B}\u{2000}\u{00C5} \u{0041}\u{030A}")),
+            ("\n"                                                       => Whitespace),
+            ("//! \u{1EBF}\u{0065}\u{0302}\u{0301}"                     => DocComment("//! \u{1EBF}\u{0065}\u{0302}\u{0301}")),
+            ("\n"                                                       => Whitespace),
+            ("/// \u{0061}\u{0301}\u{0327} \u{00E1}\u{0327}"            => DocComment("/// \u{0061}\u{0301}\u{0327} \u{00E1}\u{0327}")),
+            ("\n"                                                       => Whitespace),
+            ("//! \u{0061}\u{0327}\u{0301} \u{00E1}\u{0327}"            => DocComment("//! \u{0061}\u{0327}\u{0301} \u{00E1}\u{0327}")),
+            ("\n"                                                       => Whitespace),
+
+            ("//! \\u{212B}\\u{2000}\\u{00C5} \\u{0041}\\u{030A}"       => DocComment("//! \\u{212B}\\u{2000}\\u{00C5} \\u{0041}\\u{030A}")),
+            ("\n"                                                       => Whitespace),
+            ("/// \\u{1EBF}\\u{0065}\\u{0302}\\u{0301}"                 => DocComment("/// \\u{1EBF}\\u{0065}\\u{0302}\\u{0301}")),
+            ("\n"                                                       => Whitespace),
+            ("/// \\u{0061}\\u{0301}\\u{0327} \\u{00E1}\\u{0327}"       => DocComment("/// \\u{0061}\\u{0301}\\u{0327} \\u{00E1}\\u{0327}")),
+            ("\n"                                                       => Whitespace),
+            ("//! \\u{0061}\\u{0327}\\u{0301} \\u{00E1}\\u{0327}"       => DocComment("//! \\u{0061}\\u{0327}\\u{0301} \\u{00E1}\\u{0327}")),
+            ("\n"                                                       => Whitespace),
+
+            ("/** \u{212B}\u{2000}\u{00C5} \u{0041}\u{030A} */"         => DocComment("/** \u{212B}\u{2000}\u{00C5} \u{0041}\u{030A} */")),
+            ("\n"                                                       => Whitespace),
+            ("/** \u{1EBF}\u{0065}\u{0302}\u{0301} */"                  => DocComment("/** \u{1EBF}\u{0065}\u{0302}\u{0301} */")),
+            ("\n"                                                       => Whitespace),
+            ("/*! \u{0061}\u{0301}\u{0327} \u{00E1}\u{0327} */"         => DocComment("/*! \u{0061}\u{0301}\u{0327} \u{00E1}\u{0327} */")),
+            ("\n"                                                       => Whitespace),
+            ("/** \u{0061}\u{0327}\u{0301} \u{00E1}\u{0327} */"         => DocComment("/** \u{0061}\u{0327}\u{0301} \u{00E1}\u{0327} */")),
+            ("\n"                                                       => Whitespace),
+
+            ("/*! \\u{212B}\\u{2000}\\u{00C5} \\u{0041}\\u{030A} */"    => DocComment("/*! \\u{212B}\\u{2000}\\u{00C5} \\u{0041}\\u{030A} */")),
+            ("\n"                                                       => Whitespace),
+            ("/*! \\u{1EBF}\\u{0065}\\u{0302}\\u{0301} */"              => DocComment("/*! \\u{1EBF}\\u{0065}\\u{0302}\\u{0301} */")),
+            ("\n"                                                       => Whitespace),
+            ("/** \\u{0061}\\u{0301}\\u{0327} \\u{00E1}\\u{0327} */"    => DocComment("/** \\u{0061}\\u{0301}\\u{0327} \\u{00E1}\\u{0327} */")),
+            ("\n"                                                       => Whitespace),
+            ("/** \\u{0061}\\u{0327}\\u{0301} \\u{00E1}\\u{0327} */"    => DocComment("/** \\u{0061}\\u{0327}\\u{0301} \\u{00E1}\\u{0327} */"));
+        }
+    }
+
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     // Brackets and other fixed tokens
 
@@ -2399,6 +2442,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn integer_type_suffixes_normalization() {
+        // Check that type suffixes are normalized using Unicode Normalization Form KC
+        check! {
+            // This normalizes into a different string if NFC, NFD, or NFKD are used
+            ("9_\u{01C4}\u{03D4}\u{1E9B}\u{FBA5}\u{FEFA}"               => Literal(Integer, "9_", "\u{0044}\u{017D}\u{03AB}\u{1E61}\u{06C0}\u{0644}\u{0625}")),
+            (" "                                                        => Whitespace),
+            // This identifier has combining marks in non-canonical order
+            ("9_A\u{1DCE}\u{0327}\u{0334}\u{1DF5}\u{0333}"              => Literal(Integer, "9_", "A\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}")),
+            (" "                                                        => Whitespace),
+            // These are the same as above, but in Unicode-escaped form
+            ("9_\\u{01C4}\\u{03D4}\\u{1E9B}\\u{FBA5}\\u{FEFA}"          => Literal(Integer, "9_", "\u{0044}\u{017D}\u{03AB}\u{1E61}\u{06C0}\u{0644}\u{0625}")),
+            (" "                                                        => Whitespace),
+            ("9_A\\u{1DCE}\\u{0327}\\u{0334}\\u{1DF5}\\u{0333}"         => Literal(Integer, "9_", "A\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}"));
+        }
+    }
+
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     // Floats
 
@@ -2584,6 +2644,23 @@ mod tests {
         Severity::Error:
             (  4,  12), ( 19,  20), ( 34,  34), ( 36,  36), ( 44,  50), ( 61,  62), ( 62,  63),
             ( 70,  72), ( 81,  82), ( 89,  97), ( 89, 103), (108, 109);
+        }
+    }
+
+    #[test]
+    fn float_type_suffixes_normalization() {
+        // Check that type suffixes are normalized using Unicode Normalization Form KC
+        check! {
+            // This normalizes into a different string if NFC, NFD, or NFKD are used
+            ("9.0\u{01C4}\u{03D4}\u{1E9B}\u{FBA5}\u{FEFA}"                  => Literal(Float, "9.0", "\u{0044}\u{017D}\u{03AB}\u{1E61}\u{06C0}\u{0644}\u{0625}")),
+            (" "                                                            => Whitespace),
+            // This identifier has combining marks in non-canonical order
+            ("9.0A\u{1DCE}\u{0327}\u{0334}\u{1DF5}\u{0333}"                 => Literal(Float, "9.0", "A\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}")),
+            (" "                                                            => Whitespace),
+            // These are the same as above, but in Unicode-escaped form
+            ("9.0\\u{01C4}\\u{03D4}\\u{1E9B}\\u{FBA5}\\u{FEFA}"             => Literal(Float, "9.0", "\u{0044}\u{017D}\u{03AB}\u{1E61}\u{06C0}\u{0644}\u{0625}")),
+            (" "                                                            => Whitespace),
+            ("9.0A\\u{1DCE}\\u{0327}\\u{0334}\\u{1DF5}\\u{0333}"            => Literal(Float, "9.0", "A\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}"));
         }
     }
 
@@ -3024,6 +3101,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn character_no_normalization_occurs() {
+        check! {
+            // All these characters normalize into something different
+            ("'\u{2000}'"                   => Literal(Character, "\u{2000}")),
+            (" "                            => Whitespace),
+            ("'\u{095D}'"                   => Literal(Character, "\u{095D}")),
+            (" "                            => Whitespace),
+            ("'\u{1E9B}'"                   => Literal(Character, "\u{1E9B}")),
+            (" "                            => Whitespace),
+            ("'\u{2126}'"                   => Literal(Character, "\u{2126}")),
+            (" "                            => Whitespace),
+            ("'\u{1EBF}'"                   => Literal(Character, "\u{1EBF}")),
+            (" "                            => Whitespace),
+
+            // Unicode escapes are not normalized as well
+            ("'\\u{2000}'"                  => Literal(Character, "\u{2000}")),
+            (" "                            => Whitespace),
+            ("'\\u{095D}'"                  => Literal(Character, "\u{095D}")),
+            (" "                            => Whitespace),
+            ("'\\u{1E9B}'"                  => Literal(Character, "\u{1E9B}")),
+            (" "                            => Whitespace),
+            ("'\\u{2126}'"                  => Literal(Character, "\u{2126}")),
+            (" "                            => Whitespace),
+            ("'\\u{1EBF}'"                  => Literal(Character, "\u{1EBF}"));
+        }
+    }
+
+    #[test]
+    fn character_type_suffixes_normalization() {
+        // Check that type suffixes are normalized using Unicode Normalization Form KC
+        check! {
+            // This normalizes into a different string if NFC, NFD, or NFKD are used
+            ("' '\u{01C4}\u{03D4}\u{1E9B}\u{FBA5}\u{FEFA}"                  => Literal(Character, " ", "\u{0044}\u{017D}\u{03AB}\u{1E61}\u{06C0}\u{0644}\u{0625}")),
+            (" "                                                            => Whitespace),
+            // This identifier has combining marks in non-canonical order
+            ("' 'A\u{1DCE}\u{0327}\u{0334}\u{1DF5}\u{0333}"                 => Literal(Character, " ", "A\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}")),
+            (" "                                                            => Whitespace),
+            // These are the same as above, but in Unicode-escaped form
+            ("' '\\u{01C4}\\u{03D4}\\u{1E9B}\\u{FBA5}\\u{FEFA}"             => Literal(Character, " ", "\u{0044}\u{017D}\u{03AB}\u{1E61}\u{06C0}\u{0644}\u{0625}")),
+            (" "                                                            => Whitespace),
+            ("' 'A\\u{1DCE}\\u{0327}\\u{0334}\\u{1DF5}\\u{0333}"            => Literal(Character, " ", "A\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}"));
+        }
+    }
+
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     // Strings
 
@@ -3294,6 +3416,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn string_no_normalization_occurs() {
+        check! {
+            // Regular strings that normalize into different strings
+            ("\"\u{2000}\""                     => Literal(String, "\u{2000}")),
+            (" "                                => Whitespace),
+            ("\"\u{095D}\u{095E}\u{095F}\""     => Literal(String, "\u{095D}\u{095E}\u{095F}")),
+            (" "                                => Whitespace),
+            ("\"\u{1E9B}\""                     => Literal(String, "\u{1E9B}")),
+            (" "                                => Whitespace),
+            ("\"\u{2126}\""                     => Literal(String, "\u{2126}")),
+            (" "                                => Whitespace),
+            ("\"\u{1EBF}\""                     => Literal(String, "\u{1EBF}")),
+            (" "                                => Whitespace),
+            ("\"\u{0064}\u{0301}\u{0302}\""     => Literal(String, "\u{0064}\u{0301}\u{0302}")),
+            (" "                                => Whitespace),
+            ("\"\u{0064}\u{0302}\u{0301}\""     => Literal(String, "\u{0064}\u{0302}\u{0301}")),
+            (" "                                => Whitespace),
+
+            // Unicode escapes are also not normalized
+            ("\"\\u{2000}\""                    => Literal(String, "\u{2000}")),
+            (" "                                => Whitespace),
+            ("\"\\u{095D}\\u{095E}\\u{095F}\""  => Literal(String, "\u{095D}\u{095E}\u{095F}")),
+            (" "                                => Whitespace),
+            ("\"\\u{1E9B}\""                    => Literal(String, "\u{1E9B}")),
+            (" "                                => Whitespace),
+            ("\"\\u{2126}\""                    => Literal(String, "\u{2126}")),
+            (" "                                => Whitespace),
+            ("\"\\u{1EBF}\""                    => Literal(String, "\u{1EBF}")),
+            (" "                                => Whitespace),
+            ("\"\\u{0064}\\u{0301}\\u{0302}\""  => Literal(String, "\u{0064}\u{0301}\u{0302}")),
+            (" "                                => Whitespace),
+            ("\"\\u{0064}\\u{0302}\\u{0301}\""  => Literal(String, "\u{0064}\u{0302}\u{0301}"));
+        }
+    }
+
+    #[test]
+    fn string_type_suffixes_normalization() {
+        // Check that type suffixes are normalized using Unicode Normalization Form KC
+        check! {
+            // This normalizes into a different string if NFC, NFD, or NFKD are used
+            ("\"\"\u{01C4}\u{03D4}\u{1E9B}\u{FBA5}\u{FEFA}"         => Literal(String, "", "\u{0044}\u{017D}\u{03AB}\u{1E61}\u{06C0}\u{0644}\u{0625}")),
+            (" "                                                    => Whitespace),
+            // This identifier has combining marks in non-canonical order
+            ("\"\"A\u{1DCE}\u{0327}\u{0334}\u{1DF5}\u{0333}"        => Literal(String, "", "A\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}")),
+            (" "                                                    => Whitespace),
+            // These are the same as above, but in Unicode-escaped form
+            ("\"\"\\u{01C4}\\u{03D4}\\u{1E9B}\\u{FBA5}\\u{FEFA}"    => Literal(String, "", "\u{0044}\u{017D}\u{03AB}\u{1E61}\u{06C0}\u{0644}\u{0625}")),
+            (" "                                                    => Whitespace),
+            ("\"\"A\\u{1DCE}\\u{0327}\\u{0334}\\u{1DF5}\\u{0333}"   => Literal(String, "", "A\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}"));
+        }
+    }
+
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     // Raw strings
 
@@ -3497,6 +3672,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn raw_string_no_normalization_occurs() {
+        check! {
+            // Regular strings that normalize into different strings
+            ("r\"\u{2000}\""                    => Literal(RawString, "\u{2000}")),
+            (" "                                => Whitespace),
+            ("r\"\u{095D}\u{095E}\u{095F}\""    => Literal(RawString, "\u{095D}\u{095E}\u{095F}")),
+            (" "                                => Whitespace),
+            ("r\"\u{1E9B}\""                    => Literal(RawString, "\u{1E9B}")),
+            (" "                                => Whitespace),
+            ("r\"\u{2126}\""                    => Literal(RawString, "\u{2126}")),
+            (" "                                => Whitespace),
+            ("r\"\u{1EBF}\""                    => Literal(RawString, "\u{1EBF}")),
+            (" "                                => Whitespace),
+            ("r\"\u{0064}\u{0301}\u{0302}\""    => Literal(RawString, "\u{0064}\u{0301}\u{0302}")),
+            (" "                                => Whitespace),
+            ("r\"\u{0064}\u{0302}\u{0301}\""    => Literal(RawString, "\u{0064}\u{0302}\u{0301}")),
+            (" "                                => Whitespace);
+        }
+    }
+
+    #[test]
+    fn raw_string_type_suffixes_normalization() {
+        // Check that type suffixes are normalized using Unicode Normalization Form KC
+        check! {
+            // This normalizes into a different string if NFC, NFD, or NFKD are used
+            ("r\"\"\u{01C4}\u{03D4}\u{1E9B}\u{FBA5}\u{FEFA}"        => Literal(RawString, "", "\u{0044}\u{017D}\u{03AB}\u{1E61}\u{06C0}\u{0644}\u{0625}")),
+            (" "                                                    => Whitespace),
+            // This identifier has combining marks in non-canonical order
+            ("r\"\"A\u{1DCE}\u{0327}\u{0334}\u{1DF5}\u{0333}"       => Literal(RawString, "", "A\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}")),
+            (" "                                                    => Whitespace),
+            // These are the same as above, but in Unicode-escaped form
+            ("r\"\"\\u{01C4}\\u{03D4}\\u{1E9B}\\u{FBA5}\\u{FEFA}"   => Literal(RawString, "", "\u{0044}\u{017D}\u{03AB}\u{1E61}\u{06C0}\u{0644}\u{0625}")),
+            (" "                                                    => Whitespace),
+            ("r\"\"A\\u{1DCE}\\u{0327}\\u{0334}\\u{1DF5}\\u{0333}"  => Literal(RawString, "", "A\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}"));
+        }
+    }
+
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     // Identifiers
 
@@ -3575,17 +3788,17 @@ mod tests {
             ("\u{1780}\u{17B6}\u{179A}\u{1792}\u{17D2}\u{179C}\u{17BE}\u{178F}\u{17C1}\u{179F}\u{17D2}\u{178F}" => Identifier("\u{1780}\u{17B6}\u{179A}\u{1792}\u{17D2}\u{179C}\u{17BE}\u{178F}\u{17C1}\u{179F}\u{17D2}\u{178F}")),
             (" "                                                                                                => Whitespace),
     // Lt
-            ("\u{01F2}\u{0061}\u{0031}"                                                                         => Identifier("\u{01F2}\u{0061}\u{0031}")),
+            ("\u{01F2}\u{0061}\u{0031}"                                                                         => Identifier("\u{0044}\u{007A}\u{0061}\u{0031}")),
             (" "                                                                                                => Whitespace),
             ("\u{1FAA}"                                                                                         => Identifier("\u{1FAA}")),
             (" "                                                                                                => Whitespace),
     // Lm
-            ("\u{1D2E}\u{1D43}\u{1D48}"                                                                         => Identifier("\u{1D2E}\u{1D43}\u{1D48}")),
+            ("\u{1D2E}\u{1D43}\u{1D48}"                                                                         => Identifier("\u{0042}\u{0061}\u{0064}")),
             (" "                                                                                                => Whitespace),
-            ("\u{02C7}\u{02E4}\u{06E6}"                                                                         => Identifier("\u{02C7}\u{02E4}\u{06E6}")),
+            ("\u{02C7}\u{02E4}\u{06E6}"                                                                         => Identifier("\u{02C7}\u{0295}\u{06E6}")),
             (" "                                                                                                => Whitespace),
     // Nl
-            ("\u{2169}\u{216C}\u{2164}"                                                                         => Identifier("\u{2169}\u{216C}\u{2164}")),
+            ("\u{2169}\u{216C}\u{2164}"                                                                         => Identifier("\u{0058}\u{004C}\u{0056}")),
             (" "                                                                                                => Whitespace),
             ("\u{3007}\u{3007}\u{3007}"                                                                         => Identifier("\u{3007}\u{3007}\u{3007}")),
             (" "                                                                                                => Whitespace),
@@ -3602,10 +3815,10 @@ mod tests {
               \u{0365}\u{0359}\u{006C}\u{036E}\u{0307}\u{0358}\u{031E}\u{0356}\u{0329}\u{0330}\u{0326}\u{0068}\u{0351}\
               \u{030C}\u{0312}\u{0367}\u{033C}\u{035A}\u{0075}\u{0350}\u{034A}\u{036E}\u{0336}\u{0329}\u{0320}\u{031E}"
             => Identifier(
-             "\u{0043}\u{0364}\u{0348}\u{0359}\u{0345}\u{032E}\u{0323}\u{035A}\u{0074}\u{0342}\u{0351}\u{0351}\u{0309}\
-              \u{0363}\u{0301}\u{035E}\u{0331}\u{0325}\u{032A}\u{034E}\u{0329}\u{031E}\u{0068}\u{035F}\u{0075}\u{0368}\
-              \u{0365}\u{0359}\u{006C}\u{036E}\u{0307}\u{0358}\u{031E}\u{0356}\u{0329}\u{0330}\u{0326}\u{0068}\u{0351}\
-              \u{030C}\u{0312}\u{0367}\u{033C}\u{035A}\u{0075}\u{0350}\u{034A}\u{036E}\u{0336}\u{0329}\u{0320}\u{031E}")),
+             "\u{0043}\u{0348}\u{0359}\u{032E}\u{0323}\u{035A}\u{0364}\u{0345}\u{1E6F}\u{0325}\u{032A}\u{034E}\u{0329}\
+              \u{031E}\u{0342}\u{0351}\u{0351}\u{0309}\u{0363}\u{0301}\u{035E}\u{0068}\u{035F}\u{0075}\u{0359}\u{0368}\
+              \u{0365}\u{006C}\u{031E}\u{0356}\u{0329}\u{0330}\u{0326}\u{036E}\u{0307}\u{0358}\u{0068}\u{033C}\u{035A}\
+              \u{0351}\u{030C}\u{0312}\u{0367}\u{0075}\u{0336}\u{0329}\u{0320}\u{031E}\u{0350}\u{034A}\u{036E}")),
             (" " => Whitespace),
     // Mc (continue)
             ("\u{09A6}\u{09C0}\u{09B0}\u{09CD}\u{0998}"                                                         => Identifier("\u{09A6}\u{09C0}\u{09B0}\u{09CD}\u{0998}")),
@@ -3620,16 +3833,16 @@ mod tests {
     // Pc (continue)
             ("\u{0061}\u{203F}\u{0062}"                                                                         => Identifier("\u{0061}\u{203F}\u{0062}")),
             (" "                                                                                                => Whitespace),
-            ("\u{0078}\u{FE4D}\u{0079}"                                                                         => Identifier("\u{0078}\u{FE4D}\u{0079}")),
+            ("\u{0078}\u{FE4D}\u{0079}"                                                                         => Identifier("\u{0078}\u{005F}\u{0079}")),
             (" "                                                                                                => Whitespace),
-            ("\u{005F}\u{FE4F}\u{005F}"                                                                         => Identifier("\u{005F}\u{FE4F}\u{005F}")),
+            ("\u{005F}\u{FE4F}\u{005F}"                                                                         => Identifier("\u{005F}\u{005F}\u{005F}")),
             (" "                                                                                                => Whitespace),
     // Other_ID_Continue
             ("\u{0057}\u{00B7}\u{006F}\u{00B7}\u{0057}"                                                         => Identifier("\u{0057}\u{00B7}\u{006F}\u{00B7}\u{0057}")),
             (" "                                                                                                => Whitespace),
             ("\u{1213}\u{121F}\u{1226}\u{1369}\u{136A}\u{136B}\u{136C}\u{136D}\u{136E}\u{136F}\u{1370}\u{1371}" => Identifier("\u{1213}\u{121F}\u{1226}\u{1369}\u{136A}\u{136B}\u{136C}\u{136D}\u{136E}\u{136F}\u{1370}\u{1371}")),
             (" "                                                                                                => Whitespace),
-            ("\u{03A4}\u{0387}\u{03C1}\u{0387}\u{03BF}\u{0387}\u{03C6}\u{0387}\u{03AE}\u{0387}"                 => Identifier("\u{03A4}\u{0387}\u{03C1}\u{0387}\u{03BF}\u{0387}\u{03C6}\u{0387}\u{03AE}\u{0387}")),
+            ("\u{03A4}\u{0387}\u{03C1}\u{0387}\u{03BF}\u{0387}\u{03C6}\u{0387}\u{03AE}\u{0387}"                 => Identifier("\u{03A4}\u{00B7}\u{03C1}\u{00B7}\u{03BF}\u{00B7}\u{03C6}\u{00B7}\u{03AE}\u{00B7}")),
             (" "                                                                                                => Whitespace),
             ("\u{0078}\u{19DA}"                                                                                 => Identifier("\u{0078}\u{19DA}")),
             (" "                                                                                                => Whitespace),
@@ -3650,30 +3863,30 @@ mod tests {
     fn identifier_unicode_marks() {
         check! {
     // Pd
-            ("\u{2015}\u{301C}\u{FE31}\u{2010}\u{30A0}"                 => Identifier("\u{2015}\u{301C}\u{FE31}\u{2010}\u{30A0}")),
+            ("\u{2015}\u{301C}\u{FE31}\u{2010}\u{30A0}"                 => Identifier("\u{2015}\u{301C}\u{2014}\u{2010}\u{30A0}")),
             (" "                                                        => Whitespace),
     // Po
             ("\u{00B6}\u{066A}\u{1364}"                                 => Identifier("\u{00B6}\u{066A}\u{1364}")),
             (" "                                                        => Whitespace),
-            ("\u{2042}\u{2037}\u{203B}"                                 => Identifier("\u{2042}\u{2037}\u{203B}")),
+            ("\u{2042}\u{2037}\u{203B}"                                 => Identifier("\u{2042}\u{2035}\u{2035}\u{2035}\u{203B}")),
             (" "                                                        => Whitespace),
-            ("\u{203C}\u{A8CE}\u{FE60}\u{FF0A}"                         => Identifier("\u{203C}\u{A8CE}\u{FE60}\u{FF0A}")),
+            ("\u{203C}\u{A8CE}\u{FE60}\u{FF0A}"                         => Identifier("\u{0021}\u{0021}\u{A8CE}\u{0026}\u{002A}")),
             (" "                                                        => Whitespace),
             ("\u{110BB}\u{111DD}\u{115C9}"                              => Identifier("\u{110BB}\u{111DD}\u{115C9}")),
             (" "                                                        => Whitespace),
-            ("\u{2025}"                                                 => Identifier("\u{2025}")),
+            ("\u{2025}"                                                 => Identifier("\u{002E}\u{002E}")),
             (" "                                                        => Whitespace),
-            ("\u{2026}"                                                 => Identifier("\u{2026}")),
+            ("\u{2026}"                                                 => Identifier("\u{002E}\u{002E}\u{002E}")),
             (" "                                                        => Whitespace),
     // Sc
-            ("\u{00A2}\u{00A5}\u{20A1}\u{0BF9}\u{20B8}\u{FE69}\u{FF04}" => Identifier("\u{00A2}\u{00A5}\u{20A1}\u{0BF9}\u{20B8}\u{FE69}\u{FF04}")),
+            ("\u{00A2}\u{00A5}\u{20A1}\u{0BF9}\u{20B8}\u{FE69}\u{FF04}" => Identifier("\u{00A2}\u{00A5}\u{20A1}\u{0BF9}\u{20B8}\u{0024}\u{0024}")),
             (" "                                                        => Whitespace),
     // Sm
-            ("\u{00D7}\u{207C}"                                         => Identifier("\u{00D7}\u{207C}")),
+            ("\u{00D7}\u{207C}"                                         => Identifier("\u{00D7}\u{003D}")),
             (" "                                                        => Whitespace),
             ("\u{2192}\u{2192}\u{2194}"                                 => Identifier("\u{2192}\u{2192}\u{2194}")),
             (" "                                                        => Whitespace),
-            ("\u{220F}\u{2230}"                                         => Identifier("\u{220F}\u{2230}")),
+            ("\u{220F}\u{2230}"                                         => Identifier("\u{220F}\u{222E}\u{222E}\u{222E}")),
             (" "                                                        => Whitespace),
             ("\u{2257}"                                                 => Identifier("\u{2257}")),
             (" "                                                        => Whitespace),
@@ -3714,10 +3927,10 @@ mod tests {
               \u{0317}\u{033C}\u{0356}\u{031C}\u{0323}\u{2200}\u{033B}\u{033C}\u{222D}\u{030E}\
               \u{030F}\u{032D}\u{033A}"
             => Identifier(
-             "\u{227A}\u{0307}\u{0301}\u{0301}\u{030D}\u{030C}\u{0311}\u{033C}\u{0353}\u{0359}\
-              \u{2203}\u{034F}\u{0317}\u{2202}\u{0363}\u{036B}\u{0342}\u{0342}\u{035B}\u{031A}\
-              \u{0317}\u{033C}\u{0356}\u{031C}\u{0323}\u{2200}\u{033B}\u{033C}\u{222D}\u{030E}\
-              \u{030F}\u{032D}\u{033A}"));
+             "\u{227A}\u{033C}\u{0353}\u{0359}\u{0307}\u{0301}\u{0301}\u{030D}\u{030C}\u{0311}\
+              \u{2203}\u{034F}\u{0317}\u{2202}\u{0317}\u{033C}\u{0356}\u{031C}\u{0323}\u{0363}\
+              \u{036B}\u{0342}\u{0342}\u{035B}\u{031A}\u{2200}\u{033B}\u{033C}\u{222B}\u{222B}\
+              \u{222B}\u{032D}\u{033A}\u{030E}\u{030F}"));
         }
     }
 
@@ -3733,9 +3946,9 @@ mod tests {
             (" "            => Whitespace),
             ("\u{300E}"     => Identifier("\u{300E}")),
             (" "            => Whitespace),
-            ("\u{FE3D}"     => Identifier("\u{FE3D}")),
+            ("\u{FE3D}"     => Identifier("\u{300A}")),
             (" "            => Whitespace),
-            ("\u{FE5D}"     => Identifier("\u{FE5D}")),
+            ("\u{FE5D}"     => Identifier("\u{3014}")),
             (" "            => Whitespace),
             ("\u{2987}"     => Identifier("\u{2987}")),
             (" "            => Whitespace),
@@ -3750,9 +3963,9 @@ mod tests {
             (" "            => Whitespace),
             ("\u{300B}"     => Identifier("\u{300B}")),
             (" "            => Whitespace),
-            ("\u{FE18}"     => Identifier("\u{FE18}")),
+            ("\u{FE18}"     => Identifier("\u{3017}")),
             (" "            => Whitespace),
-            ("\u{FF63}"     => Identifier("\u{FF63}")),
+            ("\u{FF63}"     => Identifier("\u{300D}")),
             (" "            => Whitespace),
             ("\u{2992}"     => Identifier("\u{2992}")),
             (" "            => Whitespace),
@@ -3787,15 +4000,15 @@ mod tests {
         check! {
             (r"\u{0442}\u{0435}\u{0441}\u{0442}"            => Identifier("\u{0442}\u{0435}\u{0441}\u{0442}")),
             (" "                                            => Whitespace),
-            (r"\u{01CB}\u{114D1}\u{114D2}\u{114D3}"         => Identifier("\u{01CB}\u{114D1}\u{114D2}\u{114D3}")),
+            (r"\u{01CB}\u{114D1}\u{114D2}\u{114D3}"         => Identifier("\u{004E}\u{006A}\u{114D1}\u{114D2}\u{114D3}")),
             (" "                                            => Whitespace),
             (r"\u{062A}\u{062C}\u{0631}\u{064A}\u{0628}"    => Identifier("\u{062A}\u{062C}\u{0631}\u{064A}\u{0628}")),
             (" "                                            => Whitespace),
-            (r"\u{2026}\u{2026}\u{2026}"                    => Identifier("\u{2026}\u{2026}\u{2026}")),
+            (r"\u{2026}\u{2026}\u{2026}"                    => Identifier("\u{002E}\u{002E}\u{002E}\u{002E}\u{002E}\u{002E}\u{002E}\u{002E}\u{002E}")),
             (" "                                            => Whitespace),
             (r"\u{00A9}\u{06DE}\u{0BF5}"                    => Identifier("\u{00A9}\u{06DE}\u{0BF5}")),
             (" "                                            => Whitespace),
-            (r"demo\u{Ff11}\u{ff12}\u{fF13}"                => Identifier("demo\u{Ff11}\u{ff12}\u{fF13}")),
+            (r"demo\u{Ff11}\u{ff12}\u{fF13}"                => Identifier("demo\u{0031}\u{0032}\u{0033}")),
             (" "                                            => Whitespace),
             ("\u{041F}\u{0440}\\u{043E}\u{0432}\u{0435}\\u{0440}\u{043A}\\u{0430}" => Identifier("\u{041F}\u{0440}\u{043E}\u{0432}\u{0435}\u{0440}\u{043A}\u{0430}")),
             (" "                                            => Whitespace),
@@ -3826,7 +4039,7 @@ mod tests {
             ("\u{221A}"                                     => Identifier("\u{221A}")),
             ("\u{0078}"                                     => Identifier("\u{0078}")),
             (" "                                            => Whitespace),
-            ("\u{222D}"                                     => Identifier("\u{222D}")),
+            ("\u{222D}"                                     => Identifier("\u{222B}\u{222B}\u{222B}")),
             ("\u{092E}\u{094C}\u{091C}\u{093C}\u{093E}"     => Identifier("\u{092E}\u{094C}\u{091C}\u{093C}\u{093E}")),
             (" "                                            => Whitespace),
             ("\u{29BF}"                                     => Identifier("\u{29BF}")),
@@ -3834,7 +4047,7 @@ mod tests {
             ("\u{29BF}"                                     => Identifier("\u{29BF}")),
             (" "                                            => Whitespace),
             ("<"                                            => Identifier("<")),
-            ("pre\u{0301}sident"                            => Identifier("pre\u{0301}sident")),
+            ("pre\u{0301}sident"                            => Identifier("pr\u{00E9}sident")),
             (">"                                            => Identifier(">")),
             (" "                                            => Whitespace),
             ("\u{003D}\u{033F}"                             => Identifier("\u{003D}\u{033F}")),
@@ -3852,9 +4065,9 @@ mod tests {
             ("y"                                            => Identifier("y")),
             ("\u{3009}"                                     => Identifier("\u{3009}")),
             (" "                                            => Whitespace),
-            ("\u{FE43}"                                     => Identifier("\u{FE43}")),
+            ("\u{FE43}"                                     => Identifier("\u{300E}")),
             ("\u{3060}\u{307E}\u{3057}\u{307E}\u{3059}"     => Identifier("\u{3060}\u{307E}\u{3057}\u{307E}\u{3059}")),
-            ("\u{FE44}"                                     => Identifier("\u{FE44}")),
+            ("\u{FE44}"                                     => Identifier("\u{300F}")),
             ("\n"                                           => Whitespace),
     // Mark | Quote
             ("\u{0F3A}"                                     => Identifier("\u{0F3A}")),
@@ -3866,11 +4079,11 @@ mod tests {
             ("\u{00A5}"                                     => Identifier("\u{00A5}")),
             (" "                                            => Whitespace),
             ("\u{228F}\u{0BC6}"                             => Identifier("\u{228F}\u{0BC6}")),
-            ("\u{FE5D}"                                     => Identifier("\u{FE5D}")),
+            ("\u{FE5D}"                                     => Identifier("\u{3014}")),
             (" "                                            => Whitespace),
-            ("\u{FE3E}"                                     => Identifier("\u{FE3E}")),
+            ("\u{FE3E}"                                     => Identifier("\u{300B}")),
             ("\u{27A4}"                                     => Identifier("\u{27A4}")),
-            ("\u{FE3E}"                                     => Identifier("\u{FE3E}")),
+            ("\u{FE3E}"                                     => Identifier("\u{300B}")),
             (" "                                            => Whitespace),
             ("\u{1F39B}\u{20E3}"                            => Identifier("\u{1F39B}\u{20E3}")),
             ("\u{2E21}"                                     => Identifier("\u{2E21}")),
@@ -3908,7 +4121,7 @@ mod tests {
             ("\n"                                           => Whitespace),
     // Word | Quote
             (r"\u{00AB}"                                    => Identifier("\u{00AB}")),
-            (r"w\u{2113}\u{1d466}d"                         => Identifier("w\u{2113}\u{1D466}d")),
+            (r"w\u{2113}\u{1d466}d"                         => Identifier("w\u{006C}\u{0079}d")),
             ("\u{00BB}"                                     => Identifier("\u{00BB}")),
             ("\n"                                           => Whitespace),
     // Mark | Quote
@@ -3933,9 +4146,9 @@ mod tests {
             ("\\u1794\u{17C3}\\u178F\\u{1784}"          => Identifier("\u{1794}\u{17C3}\u{178F}\u{1784}")),
             (" "                                        => Whitespace),
             // Even boundary detection rules work in this case
-            (r"\u212f}"                                 => Identifier("\u{212F}")),
+            (r"\u212f}"                                 => Identifier("\u{0065}")),
             (r"\u2212}"                                 => Identifier("\u{2212}")),
-            (r"\u2134}"                                 => Identifier("\u{2134}")),
+            (r"\u2134}"                                 => Identifier("\u{006F}")),
             (" "                                        => Whitespace),
             (r"\u276E"                                  => Identifier("\u{276E}")),
             (r"\u{72D7}"                                => Identifier("\u{72D7}")),
@@ -4060,7 +4273,7 @@ mod tests {
             ("f\u{0}o"                                      => Identifier("f\u{0}o")),
             ("+\u{E666}"                                    => Identifier("+\u{E666}")),
             ("_\u{10}some\u{11}_\\invalid\\123"             => Identifier("_\u{10}some\u{11}_\\invalid\\123")),
-            ("==\u{02DC}=="                                 => Identifier("==\u{02DC}==")),
+            ("==\u{02DC}=="                                 => Identifier("==\u{0020}\u{0303}==")),
             (" "                                            => Whitespace),
             ("a\u{0488}b"                                   => Identifier("a\u{0488}b")),
             (" "                                            => Whitespace),
@@ -4082,10 +4295,10 @@ mod tests {
             // The scanner also tolerates (i.e., is able to recover from) invalid escaped Unicode
             // characters in the middle of identifiers. This also includes surrogates (which can't
             // be embedded into Rust strings as is), and other invalid escapes.
-            (r"f\u{2000}o"                                  => Identifier("f\u{2000}o")),
+            (r"f\u{2000}o"                                  => Identifier("f\u{0020}o")),
             (r"+\u{E666}"                                   => Identifier("+\u{E666}")),
             (r"_\u{60}some\u{7F}_\invalid\123"              => Identifier("_\u{FFFD}some\u{FFFD}_\\invalid\\123")),
-            (r"==\u{02DC}=="                                => Identifier("==\u{02DC}==")),
+            (r"==\u{02DC}=="                                => Identifier("==\u{0020}\u{0303}==")),
             (r" "                                           => Whitespace),
             (r"a\u{0488}b"                                  => Identifier("a\u{0488}b")),
             (r" "                                           => Whitespace),
@@ -4144,7 +4357,7 @@ mod tests {
             ("\u{2045}\u{0488}"                             => Identifier("\u{2045}\u{0488}")),
             ("\u{276E}\u{0DDC}\u{16F7A}"                    => Identifier("\u{276E}\u{0DDC}\u{16F7A}")),
             ("\u{0F3D}\u{200D}\u{20DD}"                     => Identifier("\u{0F3D}\u{200D}\u{20DD}")),
-            ("\u{FE18}\u{093F}\u{0A3F}"                     => Identifier("\u{FE18}\u{093F}\u{0A3F}")),
+            ("\u{FE18}\u{093F}\u{0A3F}"                     => Identifier("\u{3017}\u{093F}\u{0A3F}")),
             ("\u{00AB}\u{0324}\u{0483}"                     => Identifier("\u{00AB}\u{0324}\u{0483}")),
             ("\u{2039}\u{0CC7}"                             => Identifier("\u{2039}\u{0CC7}")),
             ("\u{2019}\u{20E2}"                             => Identifier("\u{2019}\u{20E2}")),
@@ -4173,6 +4386,53 @@ mod tests {
             ("#"                => Hash),
             (" "                => Whitespace),
             ("r#\"awr\"#"       => Literal(RawString, "awr"));
+        }
+    }
+
+    #[test]
+    fn identifier_normalization_words() {
+        // Check that word identifiers are normalized using Unicode Normalization Form KC
+        check! {
+            // This normalizes into a different string if NFC, NFD, or NFKD are used
+            ("\u{01C4}\u{03D4}\u{1E9B}\u{FBA5}\u{FEFA}"                 => Identifier("\u{0044}\u{017D}\u{03AB}\u{1E61}\u{06C0}\u{0644}\u{0625}")),
+            (" "                                                        => Whitespace),
+            // This identifier has combining marks in non-canonical order
+            ("A\u{1DCE}\u{0327}\u{0334}\u{1DF5}\u{0333}"                => Identifier("A\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}")),
+            (" "                                                        => Whitespace),
+            // These are the same as above, but in Unicode-escaped form
+            ("\\u{01C4}\\u{03D4}\\u{1E9B}\\u{FBA5}\\u{FEFA}"            => Identifier("\u{0044}\u{017D}\u{03AB}\u{1E61}\u{06C0}\u{0644}\u{0625}")),
+            (" "                                                        => Whitespace),
+            ("A\\u{1DCE}\\u{0327}\\u{0334}\\u{1DF5}\\u{0333}"           => Identifier("A\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}"));
+        }
+    }
+
+    #[test]
+    fn identifier_normalization_marks() {
+        // Check that mark identifiers are normalized using Unicode Normalization Form KC
+        check! {
+            // This normalizes into a different string if NFC, NFD, or NFKD are used
+            ("\u{19FF}\u{234C}\u{2034}\u{2B0D}\u{2279}"                 => Identifier("\u{19FF}\u{234C}\u{2032}\u{2032}\u{2032}\u{2B0D}\u{2279}")),
+            (" "                                                        => Whitespace),
+            // This identifier has combining marks in non-canonical order
+            ("\u{2207}\u{1DCE}\u{0327}\u{0334}\u{1DF5}\u{0333}"         => Identifier("\u{2207}\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}")),
+            (" "                                                        => Whitespace),
+            // These are the same as above, but in Unicode-escaped form
+            ("\\u{19FF}\\u{234C}\\u{2034}\\u{2B0D}\\u{2279}"            => Identifier("\u{19FF}\u{234C}\u{2032}\u{2032}\u{2032}\u{2B0D}\u{2279}")),
+            (" "                                                        => Whitespace),
+            ("\\u{2207}\\u{1DCE}\\u{0327}\\u{0334}\\u{1DF5}\\u{0333}"   => Identifier("\u{2207}\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}"));
+        }
+    }
+
+    #[test]
+    fn identifier_normalization_quotes() {
+        // Check that quote identifiers are normalized using Unicode Normalization Form KC
+        check! {
+            // This is somewhat hard to check because quote identifiers as single-character ones,
+            // and the normalized forms are similar to each other. Thus this test passes if NFKD
+            // is used. But it does fail if used with NFC, NFD, or nothing at all.
+            ("\u{2329}" => Identifier("\u{3008}")),
+            ("\u{FF63}" => Identifier("\u{300D}")),
+            ("\u{FE42}" => Identifier("\u{300D}"));
         }
     }
 
@@ -4206,7 +4466,7 @@ mod tests {
             // As well as escaped ones:
             ("\u{005F}\\u{0661}\\u{0665}:"                  => ImplicitSymbol("\u{005F}\u{0661}\u{0665}")),
             (" "                                            => Whitespace),
-            ("\u{005F}\\u{FE4F}\u{005F}:"                   => ImplicitSymbol("\u{005F}\u{FE4F}\u{005F}")),
+            ("\u{005F}\\u{FE4F}\u{005F}:"                   => ImplicitSymbol("\u{005F}\u{005F}\u{005F}")),
             (" "                                            => Whitespace),
             ("\u{0078}\\u{19DA}:"                           => ImplicitSymbol("\u{0078}\u{19DA}")),
             (" "                                            => Whitespace),
@@ -4251,16 +4511,16 @@ mod tests {
             ("["                                    => OpenDelim(Bracket)),
             (":"                                    => Colon),
             ("]"                                    => CloseDelim(Bracket)),
-            ("\u{2025}"                             => Identifier("\u{2025}")),
+            ("\u{2025}"                             => Identifier("\u{002E}\u{002E}")),
             (":"                                    => Colon),
             (" "                                    => Whitespace),
             ("\u{0024}\u{0488}"                     => Identifier("\u{0024}\u{0488}")),
             (":"                                    => Colon),
-            ("\u{FE18}"                             => Identifier("\u{FE18}")),
+            ("\u{FE18}"                             => Identifier("\u{3017}")),
             (":"                                    => Colon),
             ("\u{300E}"                             => Identifier("\u{300E}")),
             // This includes escaped identifiers
-            ("\u{220F}\\u{2230}"                    => Identifier("\u{220F}\u{2230}")),
+            ("\u{220F}\\u{2230}"                    => Identifier("\u{220F}\u{222E}\u{222E}\u{222E}")),
             (":"                                    => Colon),
             ("\u{19FB}\u{19FF}"                     => Identifier("\u{19FB}\u{19FF}")),
             (":"                                    => Colon),
@@ -4302,7 +4562,7 @@ mod tests {
             (" "                                            => Whitespace),
             ("f\\u{REPLACEMENT CHARACTER}o:"                => ImplicitSymbol("f\u{FFFD}o")),
             (" "                                            => Whitespace),
-            ("w\\u2113\\u1d466d:"                           => ImplicitSymbol("w\u{2113}\u{FFFD}")),
+            ("w\\u2113\\u1d466d:"                           => ImplicitSymbol("w\u{006C}\u{FFFD}")),
             (" "                                            => Whitespace),
             ("C\u{20DD}_\u{20E3}:"                          => ImplicitSymbol("C\u{20DD}_\u{20E3}")),
             (" "                                            => Whitespace),
@@ -4435,6 +4695,59 @@ mod tests {
             ("`:`"          => ExplicitSymbol(":")),
             (":"            => Colon),
             ("e"            => Identifier("e"));
+        }
+    }
+
+    #[test]
+    fn symbol_implicit_normalization() {
+        // Check that implicit symbols are normalized using Unicode Normalization Form KC
+        check! {
+            // This normalizes into a different string if NFC, NFD, or NFKD are used
+            ("\u{01C4}\u{03D4}\u{1E9B}\u{FBA5}\u{FEFA}:"        => ImplicitSymbol("\u{0044}\u{017D}\u{03AB}\u{1E61}\u{06C0}\u{0644}\u{0625}")),
+            (" "                                                => Whitespace),
+            // This symbol has combining marks in non-canonical order
+            ("A\u{1DCE}\u{0327}\u{0334}\u{1DF5}\u{0333}:"       => ImplicitSymbol("A\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}")),
+            (" "                                                => Whitespace),
+            // These are the same as above, but in Unicode-escaped form
+            ("\\u{01C4}\\u{03D4}\\u{1E9B}\\u{FBA5}\\u{FEFA}:"   => ImplicitSymbol("\u{0044}\u{017D}\u{03AB}\u{1E61}\u{06C0}\u{0644}\u{0625}")),
+            (" "                                                => Whitespace),
+            ("A\\u{1DCE}\\u{0327}\\u{0334}\\u{1DF5}\\u{0333}:"  => ImplicitSymbol("A\u{0334}\u{0327}\u{1DCE}\u{0333}\u{1DF5}"));
+        }
+    }
+
+    #[test]
+    fn symbol_explicit_no_normalization_occurs() {
+        check! {
+            // Regular strings that normalize into different strings
+            ("`\u{2000}`"                       => ExplicitSymbol("\u{2000}")),
+            (" "                                => Whitespace),
+            ("`\u{095D}\u{095E}\u{095F}`"       => ExplicitSymbol("\u{095D}\u{095E}\u{095F}")),
+            (" "                                => Whitespace),
+            ("`\u{1E9B}`"                       => ExplicitSymbol("\u{1E9B}")),
+            (" "                                => Whitespace),
+            ("`\u{2126}`"                       => ExplicitSymbol("\u{2126}")),
+            (" "                                => Whitespace),
+            ("`\u{1EBF}`"                       => ExplicitSymbol("\u{1EBF}")),
+            (" "                                => Whitespace),
+            ("`\u{0064}\u{0301}\u{0302}`"       => ExplicitSymbol("\u{0064}\u{0301}\u{0302}")),
+            (" "                                => Whitespace),
+            ("`\u{0064}\u{0302}\u{0301}`"       => ExplicitSymbol("\u{0064}\u{0302}\u{0301}")),
+            (" "                                => Whitespace),
+
+            // Unicode escapes are also not normalized
+            ("`\\u{2000}`"                      => ExplicitSymbol("\u{2000}")),
+            (" "                                => Whitespace),
+            ("`\\u{095D}\\u{095E}\\u{095F}`"    => ExplicitSymbol("\u{095D}\u{095E}\u{095F}")),
+            (" "                                => Whitespace),
+            ("`\\u{1E9B}`"                      => ExplicitSymbol("\u{1E9B}")),
+            (" "                                => Whitespace),
+            ("`\\u{2126}`"                      => ExplicitSymbol("\u{2126}")),
+            (" "                                => Whitespace),
+            ("`\\u{1EBF}`"                      => ExplicitSymbol("\u{1EBF}")),
+            (" "                                => Whitespace),
+            ("`\\u{0064}\\u{0301}\\u{0302}`"    => ExplicitSymbol("\u{0064}\u{0301}\u{0302}")),
+            (" "                                => Whitespace),
+            ("`\\u{0064}\\u{0302}\\u{0301}`"    => ExplicitSymbol("\u{0064}\u{0302}\u{0301}"));
         }
     }
 
