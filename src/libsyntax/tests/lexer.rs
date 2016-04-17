@@ -2057,12 +2057,12 @@ fn identifier_unicode_marks() {
         (" "                                                        => Whitespace),
 // Mn (continue)
         ("\u{227A}\u{0307}\u{0301}\u{0301}\u{030D}\u{030C}\u{0311}\u{033C}\u{0353}\u{0359}\
-          \u{2203}\u{034F}\u{0317}\u{2202}\u{0363}\u{036B}\u{0342}\u{0342}\u{035B}\u{031A}\
+          \u{2203}\u{033C}\u{0317}\u{2202}\u{0363}\u{036B}\u{0342}\u{0342}\u{035B}\u{031A}\
           \u{0317}\u{033C}\u{0356}\u{031C}\u{0323}\u{2200}\u{033B}\u{033C}\u{222D}\u{030E}\
           \u{030F}\u{032D}\u{033A}"
         => Identifier(
          "\u{227A}\u{033C}\u{0353}\u{0359}\u{0307}\u{0301}\u{0301}\u{030D}\u{030C}\u{0311}\
-          \u{2203}\u{034F}\u{0317}\u{2202}\u{0317}\u{033C}\u{0356}\u{031C}\u{0323}\u{0363}\
+          \u{2203}\u{033C}\u{0317}\u{2202}\u{0317}\u{033C}\u{0356}\u{031C}\u{0323}\u{0363}\
           \u{036B}\u{0342}\u{0342}\u{035B}\u{031A}\u{2200}\u{033B}\u{033C}\u{222B}\u{222B}\
           \u{222B}\u{032D}\u{033A}\u{030E}\u{030F}"));
     }
@@ -2567,6 +2567,63 @@ fn identifier_normalization_quotes() {
         ("\u{2329}" => Identifier("\u{3008}")),
         ("\u{FF63}" => Identifier("\u{300D}")),
         ("\u{FE42}" => Identifier("\u{300D}"));
+    }
+}
+
+#[test]
+fn identifier_default_ignoreable_code_points() {
+    // Check that characters with Unicode property Default_Ignorable_Code_Point are
+    // successfully parsed as a part of identifiers, but are reported as erroneous
+    check! {
+        // Soft hyphen
+        ("ap\\u{00AD}prox\u{00AD}i\u{00AD}mate"                                                                     => Identifier("ap\u{00AD}prox\u{00AD}i\u{00AD}mate")),
+        (" "                                                                                                        => Whitespace),
+        // Combining grapheme joiner
+        ("\u{05D4}\u{05BD}\u{034F}\u{05B7}"                                                                         => Identifier("\u{05D4}\u{05BD}\u{034F}\u{05B7}")),
+        (" "                                                                                                        => Whitespace),
+        // Arabic letter mark
+        ("\u{0643}\u{0631}\u{0629}\\u{061C}123"                                                                     => Identifier("\u{0643}\u{0631}\u{0629}\u{061C}123")),
+        (" "                                                                                                        => Whitespace),
+        // Hangul fillers (note NFKC folding)
+        ("\u{1100}\u{1161}\u{11BD}\u{115F}\u{1160}\u{11A8}\u{3164}\u{1100}\\u{FFA0}"                                => Identifier("\u{AC16}\u{115F}\u{1160}\u{11A8}\u{1160}\u{1100}\u{1160}")),
+        (" "                                                                                                        => Whitespace),
+        // Khmer inherent vowels
+        ("\u{179B}\u{17B4}\u{17D2}\\u{17B5}\u{17A2}"                                                                => Identifier("\u{179B}\u{17B4}\u{17D2}\u{17B5}\u{17A2}")),
+        (" "                                                                                                        => Whitespace),
+        // Mongolian vowel separator, Mongolian free variation selectors
+        ("\u{182C}\\u{180B}\u{1820}\u{180C}\u{1837}\u{180E}\u{1820}\u{180D}"                                        => Identifier("\u{182C}\u{180B}\u{1820}\u{180C}\u{1837}\u{180E}\u{1820}\u{180D}")),
+        (" "                                                                                                        => Whitespace),
+        // Various format control characters (note that ZWNJ and ZWJ are fine)
+        ("a\u{200B}\u{200C}\u{200D}\u{200E}\u{200F}\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}z\u{2060}fo\u{FEFF}o"    => Identifier("a\u{200B}\u{200E}\u{200F}\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}z\u{2060}fo\u{FEFF}o")),
+        (" "                                                                                                        => Whitespace),
+        // More format control characters
+        ("f\\u{2061}x\u{2062}4\\u{2064}2\u{2063}y"                                                                  => Identifier("f\u{2061}x\u{2062}4\u{2064}2\u{2063}y")),
+        (" "                                                                                                        => Whitespace),
+        // And even more format control characters
+        ("d\u{2066}\\u{2067}\u{2068}\u{2069}\\u{206A}\u{206B}\u{206C}\\u{206D}\u{206E}\\u{206F}d"                   => Identifier("d\u{2066}\u{2067}\u{2068}\u{2069}\u{206A}\u{206B}\u{206C}\u{206D}\u{206E}\u{206F}d")),
+        (" "                                                                                                        => Whitespace),
+        // Generic variation selectors
+        ("\u{60CA}\\u{FE00}\u{8BB6}\u{FE0F}\u{6B7B}\u{E0100}\u{718A}\u{E01EF}"                                      => Identifier("\u{60CA}\u{FE00}\u{8BB6}\u{FE0F}\u{6B7B}\u{E0100}\u{718A}\u{E01EF}")),
+        (" "                                                                                                        => Whitespace),
+        // Some Duployan magic
+        ("\\u{1BC02}\\u{1BCA0}\\u{1BCA1}\u{1BCA2}\\u{1BCA3}"                                                        => Identifier("\u{1BC02}\u{1BCA0}\u{1BCA1}\u{1BCA2}\u{1BCA3}")),
+        (" "                                                                                                        => Whitespace),
+        // Musical beams and slurs
+        ("\u{1D11E}\u{1D173}\\u{1D174}\u{1D175}\u{1D176}\u{1D177}\u{1D178}\\u{1D179}\u{1D17A}"                      => Identifier("\u{1D11E}\u{1D173}\u{1D174}\u{1D175}\u{1D176}\u{1D177}\u{1D178}\u{1D179}\u{1D17A}")),
+        (" "                                                                                                        => Whitespace),
+        // Language tags
+        ("foo\u{E0001}\\u{E0054}\u{E0045}\\u{E0053}\u{E0054}\\u{E007F}"                                             => Identifier("foo\u{E0001}\u{E0054}\u{E0045}\u{E0053}\u{E0054}\u{E007F}"));
+
+    Severity::Error:
+        (  2,  10), ( 14,  16), ( 17,  19), ( 28,  30), ( 39,  47), ( 60,  63), ( 63,  66),
+        ( 69,  72), ( 75,  83), ( 87,  90), ( 93, 101), (108, 116), (119, 122), (125, 128),
+        (131, 134), (136, 139), (145, 148), (148, 151), (151, 154), (154, 157), (157, 160),
+        (160, 163), (163, 166), (167, 170), (172, 175), (178, 186), (187, 190), (191, 199),
+        (200, 203), (206, 209), (209, 217), (217, 220), (220, 223), (223, 231), (231, 234),
+        (234, 237), (237, 245), (245, 248), (248, 256), (261, 269), (272, 275), (278, 282),
+        (285, 289), (299, 308), (308, 317), (317, 321), (321, 330), (335, 339), (339, 348),
+        (348, 352), (352, 356), (356, 360), (360, 364), (364, 373), (373, 377), (381, 385),
+        (385, 394), (394, 398), (398, 407), (407, 411), (411, 420);
     }
 }
 
