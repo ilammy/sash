@@ -1983,13 +1983,13 @@ fn identifier_unicode_words() {
 // ZWJ, ZWNJ
         ("\u{0CA8}\u{0CCD}\u{0CA8}"                                                                         => Identifier("\u{0CA8}\u{0CCD}\u{0CA8}")),
         (" "                                                                                                => Whitespace),
-        ("\u{0CA8}\u{0CCD}\u{200C}\u{0CA8}"                                                                 => Identifier("\u{0CA8}\u{0CCD}\u{200C}\u{0CA8}")),
+        ("\u{0CA8}\u{0CCD}\u{200C}\u{0CA8}"                                                                 => Identifier("\u{0CA8}\u{0CCD}\u{0CA8}")),
         (" "                                                                                                => Whitespace),
         ("\u{0915}\u{094D}\u{0937}"                                                                         => Identifier("\u{0915}\u{094D}\u{0937}")),
         (" "                                                                                                => Whitespace),
-        ("\u{0915}\u{094D}\u{200D}\u{0937}"                                                                 => Identifier("\u{0915}\u{094D}\u{200D}\u{0937}")),
+        ("\u{0915}\u{094D}\u{200D}\u{0937}"                                                                 => Identifier("\u{0915}\u{094D}\u{0937}")),
         (" "                                                                                                => Whitespace),
-        ("\u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645}"                                 => Identifier("\u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645}"));
+        ("\u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645}"                                 => Identifier("\u{0645}\u{06CC}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645}"));
     }
 }
 
@@ -2399,7 +2399,7 @@ fn identifier_invalid_characters_plain() {
         ("\u{0307}\u{09E3}\\\u{1DA61}\u{200D}"          => Unrecognized),
         ("1"                                            => Literal(Integer, "1")),
         ("\u{200C}\u{7F}\u{200D}"                       => Unrecognized),
-        ("x\u{200D}y"                                   => Identifier("x\u{200D}y")),
+        ("x\u{200D}y"                                   => Identifier("xy")),
         ("\n"                                           => Whitespace),
         // However! The scanner tolerates invalid Unicode characters in the middle of
         // identifiers. They are still reported, but the scanning goes on afterwards
@@ -2413,7 +2413,7 @@ fn identifier_invalid_characters_plain() {
         (" "                                            => Whitespace),
         ("C\u{20DD}_\u{20E3}"                           => Identifier("C\u{20DD}_\u{20E3}")),
         (" "                                            => Whitespace),
-        ("+\u{200D}+=\u{200D}"                          => Identifier("+\u{200D}+=\u{200D}"));
+        ("+\u{200D}+=\u{200D}"                          => Identifier("++="));
 
     Severity::Error:
         (  0,   7), (  8,  12), ( 13,  21), ( 22,  28), ( 29,  43), ( 44,  61), ( 62,  63),
@@ -2438,7 +2438,7 @@ fn identifier_invalid_characters_escaped() {
         (r" "                                           => Whitespace),
         (r"C\u{20DD}_\u{20E3}"                          => Identifier("C\u{20DD}_\u{20E3}")),
         (r" "                                           => Whitespace),
-        (r"+\u{200D}+=\u{200D}"                         => Identifier("+\u{200D}+=\u{200D}")),
+        (r"+\u{200D}+=\u{200D}"                         => Identifier("++=")),
         (r" "                                           => Whitespace),
         (r"f\u{}o"                                      => Identifier("f\u{FFFD}o")),
         (r" "                                           => Whitespace),
@@ -2490,12 +2490,12 @@ fn identifier_invalid_quote_modifiers() {
         // into the quote token (after getting reported, of course).
         ("\u{2045}\u{0488}"                             => Identifier("\u{2045}\u{0488}")),
         ("\u{276E}\u{0DDC}\u{16F7A}"                    => Identifier("\u{276E}\u{0DDC}\u{16F7A}")),
-        ("\u{0F3D}\u{200D}\u{20DD}"                     => Identifier("\u{0F3D}\u{200D}\u{20DD}")),
+        ("\u{0F3D}\u{200D}\u{20DD}"                     => Identifier("\u{0F3D}\u{20DD}")),
         ("\u{FE18}\u{093F}\u{0A3F}"                     => Identifier("\u{3017}\u{093F}\u{0A3F}")),
         ("\u{00AB}\u{0324}\u{0483}"                     => Identifier("\u{00AB}\u{0324}\u{0483}")),
         ("\u{2039}\u{0CC7}"                             => Identifier("\u{2039}\u{0CC7}")),
         ("\u{2019}\u{20E2}"                             => Identifier("\u{2019}\u{20E2}")),
-        ("\u{2E0A}\u{17CA}\u{200C}\u{1B3C}"             => Identifier("\u{2E0A}\u{17CA}\u{200C}\u{1B3C}"));
+        ("\u{2E0A}\u{17CA}\u{200C}\u{1B3C}"             => Identifier("\u{2E0A}\u{17CA}\u{1B3C}"));
     Severity::Error:
         ( 3,  5), ( 8, 11), (11, 15), (18, 21), (21, 24), (27, 30), (30, 33), (35, 37),
         (37, 39), (42, 45), (48, 51), (54, 57), (57, 60), (60, 63);

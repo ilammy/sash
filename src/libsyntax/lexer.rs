@@ -1485,7 +1485,6 @@ impl<'a> StringScanner<'a> {
 
     /// Scan over a word identifier which starts with `initial` character.
     fn scan_identifier_word(&mut self, initial: char) -> Token {
-        use unicode::normalization;
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, WORD_CONTINUE, MARK_START, QUOTE_START};
         use self::IdentifierSpecials::{Terminator, Dot, Digit, IncorrectUnicodeEscape,
@@ -1552,7 +1551,7 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        return Token::Identifier(self.intern_string(normalization::nfkc(&value)));
+        return Token::Identifier(self.intern_string(normalize_identifer(&value)));
     }
 
     /// Scan over a standalone word identifier or maybe an implicit symbol which starts
@@ -1574,7 +1573,6 @@ impl<'a> StringScanner<'a> {
 
     /// Scan over a mark identifier which starts with `initial` character.
     fn scan_identifier_mark(&mut self, initial: char) -> Token {
-        use unicode::normalization;
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, MARK_START, MARK_CONTINUE, QUOTE_START};
         use self::IdentifierSpecials::{Terminator, Dot, Digit, IncorrectUnicodeEscape,
@@ -1652,12 +1650,11 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        return Token::Identifier(self.intern_string(normalization::nfkc(&value)));
+        return Token::Identifier(self.intern_string(normalize_identifer(&value)));
     }
 
     /// Scan over a quote identifier which starts with `initial` character.
     fn scan_identifier_quote(&mut self, initial: char) -> Token {
-        use unicode::normalization;
         use unicode::sash_identifiers;
         use unicode::sash_identifiers::{WORD_START, MARK_START, QUOTE_START, QUOTE_CONTINUE};
         use self::IdentifierSpecials::{Terminator, Dot, Digit, IncorrectUnicodeEscape,
@@ -1718,7 +1715,7 @@ impl<'a> StringScanner<'a> {
             }
         }
 
-        return Token::Identifier(self.intern_string(normalization::nfkc(&value)));
+        return Token::Identifier(self.intern_string(normalize_identifer(&value)));
     }
 
     /// Maybe scan over an optional type suffix of literal tokens.
@@ -1871,4 +1868,22 @@ fn hex_value(c: char) -> u8 {
     ];
 
     return H[c as usize];
+}
+
+/// Normalizes identifier spelling.
+fn normalize_identifer(ident: &str) -> String {
+    use unicode::normalization;
+
+    // All identifiers pass though NFKC normalization to fold visual ambiguities and unify binary
+    // representations of visually identical strings so that they are considered equal.
+    let normalized = normalization::nfkc(ident);
+
+    // In addition to that we also remove zero-width (non) joiner characters which are allowed
+    // in word identifiers. They also may create ambiguity when inserted between non-joinable
+    // characters. Thus we allow their usage in identifiers, but ignore them during comparison.
+    const ZWNJ: char = '\u{200C}';
+    const ZWJ: char = '\u{200D}';
+    let cleaned = normalized.chars().filter(|&c| !(c == ZWJ || c == ZWNJ)).collect();
+
+    return cleaned;
 }
