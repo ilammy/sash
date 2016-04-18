@@ -237,6 +237,22 @@ def parse_property_list(data):
 
     return properties
 
+def parse_default_ignorable_code_points(data):
+    """Extract Default_Ignoreable_Code_Point property from DerivedCoreProperties.txt"""
+    ignoreable = []
+
+    for line in data.split('\n'):
+        if not line or line.startswith('#'):
+            continue
+
+        codepoints, prop = line.split('#')[0].split(';')
+        prop = prop.strip()
+
+        if prop == 'Default_Ignorable_Code_Point':
+            ignoreable.extend(parse_codepoint_range(codepoints))
+
+    return ignoreable
+
 def parse_quick_check_props(data):
     """Extract Quick_Check properties from DerivedNormalizationProps.txt"""
     props = {'NFD_QC': [], 'NFC_QC': [], 'NFKD_QC': [], 'NFKC_QC': []}
@@ -592,6 +608,7 @@ def prepare_unicode_character_data(version):
     CompositionExclusions     = retrieve_ucd('CompositionExclusions.txt',     version)
     PropList                  = retrieve_ucd('PropList.txt',                  version)
     NormalizationTest         = retrieve_ucd('NormalizationTest.txt',         version)
+    DerivedCoreProperties     = retrieve_ucd('DerivedCoreProperties.txt',     version)
     DerivedNormalizationProps = retrieve_ucd('DerivedNormalizationProps.txt', version)
 
     report_status('Parsing Unicode Character Data...')
@@ -604,11 +621,14 @@ def prepare_unicode_character_data(version):
     properties = parse_property_list(PropList)
     [normalization_tests_nontrivial,
      normalization_tests_trivial] = parse_normalization_tests(NormalizationTest, assigned_codepoints)
+    default_ignorable_code_points = parse_default_ignorable_code_points(DerivedCoreProperties)
     quick_check = parse_quick_check_props(DerivedNormalizationProps)
 
     report_status('Precomputing derived properties and decompositions...')
 
     ucd = UCD()
+
+    ucd.default_ignorable_code_points = default_ignorable_code_points
 
     ucd.compatibility_decompositions = compatibility_decompositions
     ucd.canonical_decompositions     = canonical_decompositions
@@ -682,11 +702,6 @@ def compute_character_sets(ucd):
                 +     ucd.general_category['Mc']    # spacing combining modifiers
                 +     ucd.general_category['Nd']    # decimal digits
                 +     ucd.general_category['Pc'])   # punctuation connectors
-
-    # As an extension, Sash also allows to use 'Zero Width Joiner' and 'Zero Width Non-Joiner'
-    # format control characters in identifiers. After the first letter.
-
-    ID_Continue = ID_Continue.union([0x200C, 0x200D])
 
     # Mark identifiers are constructed in a fashion similar to words, but they consist of symbols.
     # Notable difference is that enclosing modifiers are also allowed.
@@ -789,6 +804,21 @@ def compute_character_sets(ucd):
 
     Punctuation  = Punctuation .difference(ASCII_range).union(ASCII_Punctuation)
     P_Modifiers  = P_Modifiers .difference(ASCII_range).union(ASCII_P_Modifiers)
+
+    # Exclude characters with Default_Ignorable_Code_Point property as recommended by UAX #31.
+
+    ID_Start     = ID_Start    .difference(ucd.default_ignorable_code_points)
+    ID_Continue  = ID_Continue .difference(ucd.default_ignorable_code_points)
+    Sym_Start    = Sym_Start   .difference(ucd.default_ignorable_code_points)
+    Sym_Continue = Sym_Continue.difference(ucd.default_ignorable_code_points)
+    Punctuation  = Punctuation .difference(ucd.default_ignorable_code_points)
+
+    # However, as an exclusion, Sash allows to use 'Zero Width Joiner' and 'Zero Width Non-Joiner'
+    # format control characters (which are Default_Ignorable_Code_Point) in word-identifiers after
+    # the first letter. UAX #31 specifies more strict rules of their usage, but we simply allow to
+    # use them anywhere in words and ignore them during identifier comparison.
+
+    ID_Continue = ID_Continue.union([0x200C, 0x200D])
 
     # There is one final constraint on identifiers. Sash normalizes identifiers into NFKC to remove
     # visual ambiguity and reduce security risks (as noted in Unicode Annex #31). Given this, it is
