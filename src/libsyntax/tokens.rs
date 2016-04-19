@@ -69,7 +69,7 @@ pub enum Token {
 }
 
 /// Delimiter type.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Delimiter {
     /// Parentheses `( )`.
     Paren,
