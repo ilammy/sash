@@ -12,9 +12,10 @@ extern crate syntax;
 
 use syntax::lexer::{ScannedToken, StringScanner, Scanner};
 use syntax::tokens::{Token, Delimiter, Lit};
-use syntax::diagnostics;
 use syntax::diagnostics::{Span, SpanReporter, Severity};
 use syntax::intern_pool::{Atom, InternPool};
+
+mod utils;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // Test helpers
@@ -2948,33 +2949,15 @@ fn symbol_explicit_no_normalization_occurs() {
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use utils::iter::{longest_zip};
+use utils::stubs::{SinkReporter};
+
 pub struct ScannerTestSlice<'a>(&'a str, Token);
 
 struct ScannerTestResults {
     pub tokens: Vec<ScannedToken>,
     pub fatals: Vec<Span>,
     pub errors: Vec<Span>,
-}
-
-struct SinkReporter {
-    pub diagnostics: Rc<RefCell<Vec<(Severity, Span)>>>,
-}
-
-impl diagnostics::Reporter for SinkReporter {
-    fn report(&mut self, severity: Severity, _: &str, loc: Option<Span>) {
-        let mut diagnostics = self.diagnostics.borrow_mut();
-
-        // Scanner diagnostics always come with a location.
-        diagnostics.push((severity, loc.unwrap()));
-    }
-}
-
-impl SinkReporter {
-    fn new(diagnostics: Rc<RefCell<Vec<(Severity, Span)>>>) -> SinkReporter {
-        SinkReporter {
-            diagnostics: diagnostics,
-        }
-    }
 }
 
 /// Checks whether a sequence of test string slices yields consistent results and generates
@@ -3183,46 +3166,4 @@ fn pretty_print_literal(lit: &Lit, suffix: &Option<Atom>, pool: &InternPool) -> 
     } else {
         format!("Literal({})", expr)
     }
-}
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-// Test utilities
-
-struct LongestZip<A, B> {
-    a: A,
-    b: B,
-}
-
-impl<A, B> Iterator for LongestZip<A, B> where A: Iterator, B: Iterator {
-    type Item = (Option<A::Item>, Option<B::Item>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let v_a = self.a.next();
-        let v_b = self.b.next();
-
-        if v_a.is_some() || v_b.is_some() {
-            return Some((v_a, v_b));
-        } else {
-            return None;
-        }
-    }
-}
-
-/// Returns an iterator which simulataneously walks over two other iterators until _both_ of
-/// them are exhausted. It is similar to `zip()` method of `Iterator`, but it does not stop
-/// when one of the iterators in exhausted.
-///
-/// Example:
-/// ```
-/// assert_eq!(longest_zip(&[1, 2, 3], &[5, 6]).collect::<Vec<_>>(),
-///     &[
-///         (Some(&1), Some(&5)),
-///         (Some(&2), Some(&6)),
-///         (Some(&3), None)
-///     ]);
-/// ```
-fn longest_zip<A, B>(iter1: A, iter2: B) -> LongestZip<A::IntoIter, B::IntoIter>
-    where A: IntoIterator, B: IntoIterator
-{
-    LongestZip { a: iter1.into_iter(), b: iter2.into_iter() }
 }
