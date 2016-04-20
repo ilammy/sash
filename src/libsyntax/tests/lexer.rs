@@ -11,7 +11,7 @@
 extern crate syntax;
 
 use syntax::lexer::{ScannedToken, StringScanner, Scanner};
-use syntax::tokens::{Token, Delimiter, Lit};
+use syntax::tokens::{Token, Delimiter, Keyword, Lit};
 use syntax::diagnostics::{Span, SpanReporter, Severity};
 use syntax::intern_pool::{Atom, InternPool};
 
@@ -42,6 +42,9 @@ macro_rules! slice {
     };
     { $pool:expr, $str:expr => CloseDelim($delim:ident) } => {
         ScannerTestSlice($str, Token::CloseDelim(Delimiter::$delim))
+    };
+    { $pool:expr, $str:expr => Keyword($keyword:ident) } => {
+        ScannerTestSlice($str, Token::Keyword(Keyword::$keyword))
     };
     { $pool:expr, $str:expr => Literal($lit:ident, $val:expr) } => {
         ScannerTestSlice($str, Token::Literal(Lit::$lit($pool.intern($val)), None))
@@ -2944,6 +2947,81 @@ fn symbol_explicit_no_normalization_occurs() {
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+// Keywords
+
+#[test]
+fn keywords_list() {
+    check! {
+        ("module"       => Keyword(Module)),
+        (" "            => Whitespace),
+        ("library"      => Keyword(Library)),
+        (" "            => Whitespace);
+    }
+}
+
+#[test]
+fn keywords_are_case_sensitive() {
+    check! {
+        ("module"       => Keyword(Module)),
+        (" "            => Whitespace),
+        ("Module"       => Identifier("Module")),
+        (" "            => Whitespace),
+        ("MODULE"       => Identifier("MODULE")),
+        (" "            => Whitespace),
+        ("MoDuLe"       => Identifier("MoDuLe")),
+        (" "            => Whitespace),
+        ("mODULE"       => Identifier("mODULE"));
+    }
+}
+
+#[test]
+fn keywords_are_checked_after_normalization() {
+    // We check for keywords after normalization stage to completely disallow identifiers that are
+    // textually equal to keywords. Thus the source code can be preprocessed to put all identifiers
+    // into NFKC, and it will still be equal to the original one, not suddenly breaking because
+    // somebody used a fancy Unicode name.
+    check! {
+        // ｍｏｄｕｌｅ
+        ("\u{FF4D}\u{FF4F}\u{FF44}\u{FF55}\u{FF4C}\u{FF45}"         => Keyword(Module)),
+        (" "                                                        => Whitespace),
+        // 𝓶𝓸𝓭𝓾𝓵𝓮
+        ("\u{1D4F6}\u{1D4F8}\u{1D4ED}\u{1D4FE}\u{1D4F5}\u{1D4EE}"   => Keyword(Module)),
+        (" "                                                        => Whitespace),
+        // m‌odule
+        ("\u{006D}\u{200C}\u{006F}\u{0064}\u{0075}\u{006C}\u{0065}" => Keyword(Module)),
+        (" "                                                        => Whitespace);
+    }
+}
+
+#[test]
+fn keywords_no_interkeyword_boundaries() {
+    check! {
+        ("modulelibrary"    => Identifier("modulelibrary"));
+    }
+}
+
+#[test]
+fn keywords_can_be_type_suffixes() {
+    // Well, actually they can't, but we won't be checking this in lexer.
+    check! {
+        ("123module"        => Literal(Integer, "123", "module"));
+    }
+}
+
+#[test]
+fn keywords_are_not_symbols_or_anything() {
+    check! {
+        ("module:"          => ImplicitSymbol("module")),
+        (" "                => Whitespace),
+        ("`module`"         => ExplicitSymbol("module")),
+        (" "                => Whitespace),
+        ("\"module\""       => Literal(String, "module")),
+        (" "                => Whitespace),
+        ("r\"module\""      => Literal(RawString, "module"));
+    }
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // Test helpers
 
 use std::cell::RefCell;
@@ -3145,6 +3223,11 @@ fn pretty_print_token(token: &Token, pool: &InternPool) -> String {
         Token::Identifier(atom)     => format!("Identifier({:?})",     pool.get(atom)),
         Token::ImplicitSymbol(atom) => format!("ImplicitSymbol({:?})", pool.get(atom)),
         Token::ExplicitSymbol(atom) => format!("ExplicitSymbol({:?})", pool.get(atom)),
+
+        Token::Keyword(ref keyword) => format!("Keyword({})", match *keyword {
+            Keyword::Library => "library",
+            Keyword::Module => "module",
+        }),
 
         Token::Literal(ref lit, ref suffix) => pretty_print_literal(lit, suffix, pool),
 

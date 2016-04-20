@@ -11,7 +11,7 @@
 
 use std::char;
 
-use tokens::{Token, Delimiter, Lit};
+use tokens::{Token, Delimiter, Keyword, Lit};
 use diagnostics::{Span, SpanReporter};
 use intern_pool::{Atom, InternPool};
 
@@ -58,6 +58,9 @@ pub struct StringScanner<'a> {
 
     /// The intern pool for atoms stored in scanned tokens.
     pool: &'a InternPool,
+
+    // Cached keyword atoms.
+    atoms: AtomCache,
 
     // Scanning state
     //
@@ -106,6 +109,7 @@ impl<'a> StringScanner<'a> {
         let mut scanner = StringScanner {
             buf: s,
             pool: pool,
+            atoms: AtomCache::new(pool),
             cur: None, pos: 0, prev_pos: 0,
             report: reporter,
         };
@@ -1568,6 +1572,15 @@ impl<'a> StringScanner<'a> {
             }
         }
 
+        // Some word identifiers are reserved as keywords.
+        match initial_token {
+            Token::Identifier(atom) => {
+                if atom == self.atoms.module { return Token::Keyword(Keyword::Module) }
+                if atom == self.atoms.library { return Token::Keyword(Keyword::Library) }
+            }
+            _ => unreachable!()
+        }
+
         return initial_token;
     }
 
@@ -1841,6 +1854,27 @@ enum IdentifierSpecials {
 
     /// Scanned over a Unicode escape representing an ASCII character.
     AsciiUnicodeEscape,
+}
+
+/// Sash keyword strings.
+///
+/// These are used to discern keywords from identifiers. We cache them beforehand to avoid
+/// reinterning strings with each scanned identifier. The atom values refer to the intern pool
+/// used by the scanner. Also note that these are public fields and it is obviously a bad idea
+/// to modify them after the cache is created.
+struct AtomCache {
+    pub library: Atom,
+    pub module: Atom,
+}
+
+impl AtomCache {
+    /// Make a new atom cache from the given pool.
+    pub fn new(pool: &InternPool) -> AtomCache {
+        AtomCache {
+            library: pool.intern("library"),
+            module: pool.intern("module"),
+        }
+    }
 }
 
 /// Checks whether `c` is a valid digit of base `base`.
