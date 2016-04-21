@@ -12,7 +12,7 @@
 use std::char;
 
 use tokens::{Token, Delimiter, Keyword, Lit};
-use diagnostics::{Span, SpanReporter};
+use diagnostics::{Span, Handler};
 use intern_pool::{Atom, InternPool};
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -89,7 +89,7 @@ pub struct StringScanner<'a> {
     //
 
     /// Our designated responsible for diagnostic processing.
-    report: &'a SpanReporter,
+    report: &'a Handler,
 }
 
 impl<'a> Scanner for StringScanner<'a> {
@@ -104,14 +104,14 @@ impl<'a> Scanner for StringScanner<'a> {
 
 impl<'a> StringScanner<'a> {
     /// Makes a new scanner for the given string which will report scanning errors
-    /// to the given reporter and intern strings into the given pool.
-    pub fn new(s: &'a str, pool: &'a InternPool, reporter: &'a SpanReporter) -> StringScanner<'a> {
+    /// to the given handler and intern strings into the given pool.
+    pub fn new(s: &'a str, pool: &'a InternPool, handler: &'a Handler) -> StringScanner<'a> {
         let mut scanner = StringScanner {
             buf: s,
             pool: pool,
             atoms: AtomCache::new(pool),
             cur: None, pos: 0, prev_pos: 0,
-            report: reporter,
+            report: handler,
         };
         scanner.read();
         scanner

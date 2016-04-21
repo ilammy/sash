@@ -11,7 +11,7 @@
 
 use std::cell::RefCell;
 
-/// Span of a token.
+/// Span of a token or an expression.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Span {
     /// Byte offset of the first character of the span.
@@ -48,15 +48,15 @@ pub trait Reporter {
     fn report(&mut self, severity: Severity, message: &str, loc: Option<Span>);
 }
 
-/// Convenience reporter for easy reporting of diagnostics related to spans of source code.
-pub struct SpanReporter {
+/// Convenience wrapper for easy reporting of diagnostics related to spans of source code.
+pub struct Handler {
     reporter: RefCell<Box<Reporter>>,
 }
 
-impl SpanReporter {
-    /// Constructs a new SpanReporter for a given reporter.
-    pub fn with_reporter(reporter: Box<Reporter>) -> SpanReporter {
-        SpanReporter {
+impl Handler {
+    /// Constructs a new Handler for a given reporter.
+    pub fn with_reporter(reporter: Box<Reporter>) -> Handler {
+        Handler {
             reporter: RefCell::new(reporter)
         }
     }

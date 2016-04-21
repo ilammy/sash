@@ -12,7 +12,7 @@ extern crate syntax;
 
 use syntax::lexer::{ScannedToken, StringScanner, Scanner};
 use syntax::tokens::{Token, Delimiter, Keyword, Lit};
-use syntax::diagnostics::{Span, SpanReporter, Severity};
+use syntax::diagnostics::{Span, Handler, Severity};
 use syntax::intern_pool::{Atom, InternPool};
 
 mod utils;
@@ -3111,7 +3111,7 @@ fn process_test_string(whole_string: &str, pool: &InternPool) -> ScannerTestResu
     let mut tokens = Vec::new();
     let diagnostics = Rc::new(RefCell::new(Vec::new()));
     let reporter = SinkReporter::new(diagnostics.clone());
-    let handler = SpanReporter::with_reporter(Box::new(reporter));
+    let handler = Handler::with_reporter(Box::new(reporter));
 
     let mut scanner = StringScanner::new(whole_string, pool, &handler);
 
