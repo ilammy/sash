@@ -3025,9 +3025,10 @@ fn keywords_are_not_symbols_or_anything() {
 // Test helpers
 
 use std::cell::RefCell;
+use std::fmt::Write;
 use std::rc::Rc;
 
-use utils::iter::{longest_zip};
+use utils::diff::sequence::{self, Diff};
 use utils::stubs::{SinkReporter};
 
 pub struct ScannerTestSlice<'a>(&'a str, Token);
@@ -3057,17 +3058,21 @@ pub fn check(slices: &[ScannerTestSlice], diagnostics: &[(Severity, Span)], pool
         verify("Errors", &expected.errors, &actual.errors,
             |span| print_span(span, &test_string));
 
-    if let Some(first_failure) = token_failures {
-        panic!("first invalid token: #{}", first_failure);
+    let failed = token_failures.is_err() || fatal_failures.is_err() || error_failures.is_err();
+
+    if failed { println!(""); }
+
+    if let Err(string) = token_failures {
+        println!("{}", string);
+    }
+    if let Err(string) = fatal_failures {
+        println!("{}", string);
+    }
+    if let Err(string) = error_failures {
+        println!("{}", string);
     }
 
-    if let Some(first_failure) = fatal_failures {
-        panic!("first invalid fatal: #{}", first_failure);
-    }
-
-    if let Some(first_failure) = error_failures {
-        panic!("first invalid error: #{}", first_failure);
-    }
+    if failed { panic!("test failed"); }
 }
 
 /// Reorder and rearrange raw test data into the input string and expected results.
@@ -3167,36 +3172,42 @@ fn partition_diagnostics(diagnostics: &[(Severity, Span)]) -> (Vec<Span>, Vec<Sp
     return (fatals, errors);
 }
 
-/// Prints out and verifies produced results. Returns Some 1-based index of the first incorrect
-/// item, or None if the actual results are equal to expected ones.
-fn verify<T, F>(title: &str, expected: &[T], actual: &[T], to_string: F) -> Option<u32>
+/// Prints out and verifies produced results.
+///
+/// Returns Ok if everything is fine or an Err with a string to be shown the user.
+fn verify<T, F>(title: &str, expected: &[T], actual: &[T], to_string: F) -> Result<(), String>
     where T: Eq, F: Fn(&T) -> String
 {
-    if expected.is_empty() && actual.is_empty() {
-        return None;
-    }
+    let mut report = String::new();
 
-    print!("\n{}\n\nindex:\n\t<expected>\n\t<actual>\n", title);
+    writeln!(&mut report, "{}", title).unwrap();
 
-    let mut first_mismatch = None;
+    let diff = sequence::diff(actual, expected);
 
-    for (index, (expected, actual)) in (1..).zip(longest_zip(expected, actual)) {
-        let bad = actual != expected;
+    let mut okay = true;
 
-        if bad && first_mismatch.is_none() {
-            first_mismatch = Some(index);
+    for entry in diff {
+        match entry {
+            Diff::Equal(ref actual, _) => {
+                writeln!(&mut report, "  {}", to_string(actual)).unwrap();
+            }
+            Diff::Replace(ref actual, ref expected) => {
+                okay = false;
+                writeln!(&mut report, "- {}", to_string(actual)).unwrap();
+                writeln!(&mut report, "+ {}", to_string(expected)).unwrap();
+            }
+            Diff::Left(ref actual) => {
+                okay = false;
+                writeln!(&mut report, "- {}", to_string(actual)).unwrap();
+            }
+            Diff::Right(ref expected) => {
+                okay = false;
+                writeln!(&mut report, "+ {}", to_string(expected)).unwrap();
+            }
         }
-
-        print!("{index}:\n{ind_ex}\t{expected}\n{ind_act}\t{actual}\n",
-            index     = index,
-            ind_ex    = if bad { "-- exp:" } else { "" },
-            ind_act   = if bad { "-- act:" } else { "" },
-            expected  = expected.map_or("None".to_string(), &to_string),
-            actual    = actual.  map_or("None".to_string(), &to_string),
-        );
     }
 
-    return first_mismatch;
+    return if okay { Ok(()) } else { Err(report) };
 }
 
 fn print_token(token: &ScannedToken, buf: &str, pool: &InternPool) -> String {

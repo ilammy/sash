@@ -4,10 +4,8 @@
 // This file may be copied, distributed, and modified only in accordance
 // with the terms specified by this license.
 
-//! Test utilities.
+//! Computing differences.
 //!
-//! Here we gather miscellaneous utility code that is used throughout our test harness.
+//! Various code for computing diffs between entities.
 
-pub mod diff;
-pub mod iter;
-pub mod stubs;
+pub mod sequence;
