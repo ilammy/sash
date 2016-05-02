@@ -10,5 +10,6 @@
 
 pub mod diff;
 pub mod iter;
+pub mod pretty_tree;
 pub mod stubs;
 pub mod tree;
