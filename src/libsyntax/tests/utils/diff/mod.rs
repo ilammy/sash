@@ -9,3 +9,4 @@
 //! Various code for computing diffs between entities.
 
 pub mod sequence;
+pub mod tree;

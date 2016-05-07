@@ -4,11 +4,10 @@
 // This file may be copied, distributed, and modified only in accordance
 // with the terms specified by this license.
 
-//! Test utilities.
-//!
-//! Here we gather miscellaneous utility code that is used throughout our test harness.
+//! Tree utilities.
 
-pub mod diff;
-pub mod iter;
-pub mod stubs;
-pub mod tree;
+/// Trait of tree nodes.
+pub trait TreeNode {
+    /// Returns references to child nodes of this node.
+    fn children<'a>(&'a self) -> Vec<&'a Self>;
+}
