@@ -16,8 +16,10 @@
 //! that derived implementations of `Eq` usually do a deep comparison, so you will usually need to
 //! write an explicit comparator anyway.
 
+use std::fmt;
 use utils::diff::sequence;
 use utils::tree::{TreeNode};
+use utils::pretty_tree::{self, DisplayTreeNode};
 
 /// Result of tree node comparison.
 #[derive(Debug, PartialEq)]
@@ -33,6 +35,45 @@ pub enum Diff<'a, T> where T: 'a {
 
     /// Corresponding nodes are not equal.
     Replace(&'a T, &'a T),
+}
+
+impl<'a, T> TreeNode for Diff<'a, T> {
+    fn children<'b>(&'b self) -> Vec<&'b Self> {
+        match *self {
+            // Non-equal diffs are terminal, they have no child nodes
+            Diff::Left(_) | Diff::Right(_) | Diff::Replace(_, _) => vec![],
+
+            // Equal diffs provide access to their child diffs
+            Diff::Equal(_, _, ref children) => {
+                children.iter().collect()
+            }
+        }
+    }
+}
+
+impl<'a, T> DisplayTreeNode for Diff<'a, T> where T: DisplayTreeNode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Diff::Left(node) => {
+                try!(f.write_str("(-) "));
+                try!(node.fmt(f));
+            }
+            Diff::Right(node) => {
+                try!(f.write_str("(+) "));
+                try!(node.fmt(f));
+            }
+            Diff::Equal(node, _, _) => {
+                try!(node.fmt(f));
+            }
+            Diff::Replace(left_node, right_node) => {
+                try!(f.write_str("(-) "));
+                try!(left_node.fmt(f));
+                try!(f.write_str("\n(+) "));
+                try!(right_node.fmt(f));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Compute the flat difference between two trees of comparable elements.
@@ -106,11 +147,39 @@ fn flat_child_diff<'a, T>(lhs: &'a T, rhs: &'a T, equal: &Fn(&T, &T) -> bool) ->
         .collect()
 }
 
+/// Prune a diff tree, removing all-equal branches.
+pub fn pruned<'a, T>(diff: &Diff<'a, T>) -> Diff<'a, T> {
+    match *diff {
+        // Non-equal nodes have no children and cannot be pruned.
+        Diff::Left(lhs) => Diff::Left(lhs),
+        Diff::Right(rhs) => Diff::Right(rhs),
+        Diff::Replace(lhs, rhs) => Diff::Replace(lhs, rhs),
+
+        // Children of equal nodes should be recursively examined. If their children are all equal
+        // nodes with no children (after pruning) then we can prune them as well.
+        Diff::Equal(lhs, rhs, ref children) => {
+            let pruned_children: Vec<_> = children.iter().map(pruned).collect();
+
+            let can_prune = pruned_children.iter().all(|diff| {
+                if let Diff::Equal(_, _, ref child_list) = *diff {
+                    child_list.is_empty()
+                } else {
+                    false
+                }
+            });
+
+            Diff::Equal(lhs, rhs, if can_prune { vec![] } else { pruned_children })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt;
     use std::ops::Index;
     use utils::tree::{TreeNode};
+    use utils::pretty_tree::{self, DisplayTreeNode};
 
     #[derive(Debug, Eq)]
     struct Tree<T> {
@@ -141,6 +210,12 @@ mod tests {
 
         fn index(&self, index: usize) -> &Self::Output {
             &self.children[index]
+        }
+    }
+
+    impl<T> DisplayTreeNode for Tree<T> where T: fmt::Display {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "{}", self.value)
         }
     }
 
@@ -308,5 +383,188 @@ mod tests {
                 Diff::Replace(&a[2], &b[5]),
             ])
         );
+    }
+
+    // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    // Pretty-printing diffs
+
+    #[test]
+    fn print_diff_from_example() {
+        let a =
+            Tree::new("A", vec![
+                Tree::new("B", vec![
+                    Tree::new("D", vec![
+                        Tree::new("G", vec![]),
+                        Tree::new("H", vec![]),
+                    ]),
+                    Tree::new("E", vec![]),
+                    Tree::new("F", vec![]),
+                ]),
+                Tree::new("C", vec![]),
+            ]);
+
+        let b =
+            Tree::new("A", vec![
+                Tree::new("B", vec![
+                    Tree::new("E", vec![]),
+                    Tree::new("Q", vec![]),
+                    Tree::new("F", vec![]),
+                ]),
+                Tree::new("C", vec![
+                    Tree::new("D", vec![
+                        Tree::new("G", vec![
+                            Tree::new("J", vec![]),
+                        ]),
+                        Tree::new("H", vec![]),
+                    ]),
+                ]),
+            ]);
+
+        let diff = flat_diff(&a, &b);
+
+        assert_eq!(diff,
+            Diff::Equal(&a, &b, vec![
+                Diff::Equal(&a[0], &b[0], vec![
+                    Diff::Left(&a[0][0]),
+                    Diff::Equal(&a[0][1], &b[0][0], vec![]),
+                    Diff::Right(&b[0][1]),
+                    Diff::Equal(&a[0][2], &b[0][2], vec![]),
+                ]),
+                Diff::Equal(&a[1], &b[1], vec![
+                    Diff::Right(&b[1][0]),
+                ]),
+            ]));
+
+        assert_eq!(pretty_tree::format(&pruned(&diff)), "\
+A
+|- B
+|  |- (-) D
+|  |- E
+|  |- (+) Q
+|  `- F
+`- C
+   `- (+) D");
+    }
+
+    #[test]
+    fn print_diff_left() {
+        let a = Tree::new("A", vec![Tree::new("B", vec![])]);
+        let b = Tree::new("A", vec![]);
+
+        let diff = flat_diff(&a, &b);
+
+        assert_eq!(diff,
+            Diff::Equal(&a, &b, vec![
+                Diff::Left(&a[0]),
+            ]));
+
+        assert_eq!(pretty_tree::format(&pruned(&diff)), "\
+A
+`- (-) B");
+    }
+
+    #[test]
+    fn print_diff_right() {
+        let a = Tree::new("A", vec![]);
+        let b = Tree::new("A", vec![Tree::new("B", vec![])]);
+
+        let diff = flat_diff(&a, &b);
+
+        assert_eq!(diff,
+            Diff::Equal(&a, &b, vec![
+                Diff::Right(&b[0]),
+            ]));
+
+        assert_eq!(pretty_tree::format(&pruned(&diff)), "\
+A
+`- (+) B");
+    }
+
+    #[test]
+    fn print_diff_replace_root() {
+        let a = Tree::new("A", vec![]);
+        let b = Tree::new("B", vec![]);
+
+        let diff = flat_diff(&a, &b);
+
+        assert_eq!(diff, Diff::Replace(&a, &b));
+
+        assert_eq!(pretty_tree::format(&pruned(&diff)), "\
+(-) A
+(+) B");
+    }
+
+    #[test]
+    fn print_diff_replace_inner() {
+        let a = Tree::new("A", vec![Tree::new("B", vec![])]);
+        let b = Tree::new("A", vec![Tree::new("C", vec![])]);
+
+        let diff = flat_diff(&a, &b);
+
+        assert_eq!(diff,
+            Diff::Equal(&a, &b, vec![
+                Diff::Replace(&a[0], &b[0]),
+            ]));
+
+        assert_eq!(pretty_tree::format(&pruned(&diff)), "\
+A
+`- (-) B
+   (+) C");
+    }
+
+    #[test]
+    fn print_diff_equal() {
+        let a = Tree::new("A", vec![]);
+        let b = Tree::new("A", vec![]);
+
+        let diff = flat_diff(&a, &b);
+
+        assert_eq!(diff, Diff::Equal(&a, &b, vec![]));
+
+        assert_eq!(pretty_tree::format(&pruned(&diff)), "A");
+    }
+
+    #[test]
+    fn print_diff_inner() {
+        let a =
+            Tree::new("A", vec![
+                Tree::new("B", vec![
+                    Tree::new("C", vec![]),
+                ]),
+                Tree::new("D", vec![
+                    Tree::new("E", vec![]),
+                ]),
+            ]);
+
+        let b =
+            Tree::new("A", vec![
+                Tree::new("B", vec![
+                    Tree::new("C", vec![]),
+                    Tree::new("?", vec![]),
+                ]),
+                Tree::new("D", vec![
+                    Tree::new("E", vec![]),
+                ]),
+            ]);
+
+        let diff = flat_diff(&a, &b);
+
+        assert_eq!(diff,
+            Diff::Equal(&a, &b, vec![
+                Diff::Equal(&a[0], &b[0], vec![
+                    Diff::Equal(&a[0][0], &b[0][0], vec![]),
+                    Diff::Right(&b[0][1]),
+                ]),
+                Diff::Equal(&a[1], &b[1], vec![
+                    Diff::Equal(&a[1][0], &b[1][0], vec![]),
+                ]),
+            ]));
+
+        assert_eq!(pretty_tree::format(&pruned(&diff)), "\
+A
+|- B
+|  |- C
+|  `- (+) ?
+`- D");
     }
 }
