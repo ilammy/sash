@@ -61,12 +61,15 @@ pub enum Token {
     /// An explicit symbol.
     ExplicitSymbol(Atom),
 
+    /// A keyword.
+    Keyword(Keyword),
+
     /// Marker token denoting invalid character sequences.
     Unrecognized,
 }
 
 /// Delimiter type.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Delimiter {
     /// Parentheses `( )`.
     Paren,
@@ -95,4 +98,14 @@ pub enum Lit {
 
     /// A raw string of characters.
     RawString(Atom),
+}
+
+/// Literal keyword.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Keyword {
+    /// `library`.
+    Library,
+
+    /// `module`.
+    Module,
 }

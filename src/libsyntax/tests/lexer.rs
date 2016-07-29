@@ -11,10 +11,11 @@
 extern crate syntax;
 
 use syntax::lexer::{ScannedToken, StringScanner, Scanner};
-use syntax::tokens::{Token, Delimiter, Lit};
-use syntax::diagnostics;
-use syntax::diagnostics::{Span, SpanReporter, Severity};
+use syntax::tokens::{Token, Delimiter, Keyword, Lit};
+use syntax::diagnostics::{Span, Handler, Severity};
 use syntax::intern_pool::{Atom, InternPool};
+
+mod utils;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // Test helpers
@@ -41,6 +42,9 @@ macro_rules! slice {
     };
     { $pool:expr, $str:expr => CloseDelim($delim:ident) } => {
         ScannerTestSlice($str, Token::CloseDelim(Delimiter::$delim))
+    };
+    { $pool:expr, $str:expr => Keyword($keyword:ident) } => {
+        ScannerTestSlice($str, Token::Keyword(Keyword::$keyword))
     };
     { $pool:expr, $str:expr => Literal($lit:ident, $val:expr) } => {
         ScannerTestSlice($str, Token::Literal(Lit::$lit($pool.intern($val)), None))
@@ -2943,10 +2947,89 @@ fn symbol_explicit_no_normalization_occurs() {
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+// Keywords
+
+#[test]
+fn keywords_list() {
+    check! {
+        ("module"       => Keyword(Module)),
+        (" "            => Whitespace),
+        ("library"      => Keyword(Library)),
+        (" "            => Whitespace);
+    }
+}
+
+#[test]
+fn keywords_are_case_sensitive() {
+    check! {
+        ("module"       => Keyword(Module)),
+        (" "            => Whitespace),
+        ("Module"       => Identifier("Module")),
+        (" "            => Whitespace),
+        ("MODULE"       => Identifier("MODULE")),
+        (" "            => Whitespace),
+        ("MoDuLe"       => Identifier("MoDuLe")),
+        (" "            => Whitespace),
+        ("mODULE"       => Identifier("mODULE"));
+    }
+}
+
+#[test]
+fn keywords_are_checked_after_normalization() {
+    // We check for keywords after normalization stage to completely disallow identifiers that are
+    // textually equal to keywords. Thus the source code can be preprocessed to put all identifiers
+    // into NFKC, and it will still be equal to the original one, not suddenly breaking because
+    // somebody used a fancy Unicode name.
+    check! {
+        // ｍｏｄｕｌｅ
+        ("\u{FF4D}\u{FF4F}\u{FF44}\u{FF55}\u{FF4C}\u{FF45}"         => Keyword(Module)),
+        (" "                                                        => Whitespace),
+        // 𝓶𝓸𝓭𝓾𝓵𝓮
+        ("\u{1D4F6}\u{1D4F8}\u{1D4ED}\u{1D4FE}\u{1D4F5}\u{1D4EE}"   => Keyword(Module)),
+        (" "                                                        => Whitespace),
+        // m‌odule
+        ("\u{006D}\u{200C}\u{006F}\u{0064}\u{0075}\u{006C}\u{0065}" => Keyword(Module)),
+        (" "                                                        => Whitespace);
+    }
+}
+
+#[test]
+fn keywords_no_interkeyword_boundaries() {
+    check! {
+        ("modulelibrary"    => Identifier("modulelibrary"));
+    }
+}
+
+#[test]
+fn keywords_can_be_type_suffixes() {
+    // Well, actually they can't, but we won't be checking this in lexer.
+    check! {
+        ("123module"        => Literal(Integer, "123", "module"));
+    }
+}
+
+#[test]
+fn keywords_are_not_symbols_or_anything() {
+    check! {
+        ("module:"          => ImplicitSymbol("module")),
+        (" "                => Whitespace),
+        ("`module`"         => ExplicitSymbol("module")),
+        (" "                => Whitespace),
+        ("\"module\""       => Literal(String, "module")),
+        (" "                => Whitespace),
+        ("r\"module\""      => Literal(RawString, "module"));
+    }
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // Test helpers
 
 use std::cell::RefCell;
+use std::fmt::Write;
 use std::rc::Rc;
+
+use utils::diff::sequence::{self, Diff};
+use utils::stubs::{SinkReporter};
 
 pub struct ScannerTestSlice<'a>(&'a str, Token);
 
@@ -2954,27 +3037,6 @@ struct ScannerTestResults {
     pub tokens: Vec<ScannedToken>,
     pub fatals: Vec<Span>,
     pub errors: Vec<Span>,
-}
-
-struct SinkReporter {
-    pub diagnostics: Rc<RefCell<Vec<(Severity, Span)>>>,
-}
-
-impl diagnostics::Reporter for SinkReporter {
-    fn report(&mut self, severity: Severity, _: &str, loc: Option<Span>) {
-        let mut diagnostics = self.diagnostics.borrow_mut();
-
-        // Scanner diagnostics always come with a location.
-        diagnostics.push((severity, loc.unwrap()));
-    }
-}
-
-impl SinkReporter {
-    fn new(diagnostics: Rc<RefCell<Vec<(Severity, Span)>>>) -> SinkReporter {
-        SinkReporter {
-            diagnostics: diagnostics,
-        }
-    }
 }
 
 /// Checks whether a sequence of test string slices yields consistent results and generates
@@ -2996,17 +3058,21 @@ pub fn check(slices: &[ScannerTestSlice], diagnostics: &[(Severity, Span)], pool
         verify("Errors", &expected.errors, &actual.errors,
             |span| print_span(span, &test_string));
 
-    if let Some(first_failure) = token_failures {
-        panic!("first invalid token: #{}", first_failure);
+    let failed = token_failures.is_err() || fatal_failures.is_err() || error_failures.is_err();
+
+    if failed { println!(""); }
+
+    if let Err(string) = token_failures {
+        println!("{}", string);
+    }
+    if let Err(string) = fatal_failures {
+        println!("{}", string);
+    }
+    if let Err(string) = error_failures {
+        println!("{}", string);
     }
 
-    if let Some(first_failure) = fatal_failures {
-        panic!("first invalid fatal: #{}", first_failure);
-    }
-
-    if let Some(first_failure) = error_failures {
-        panic!("first invalid error: #{}", first_failure);
-    }
+    if failed { panic!("test failed"); }
 }
 
 /// Reorder and rearrange raw test data into the input string and expected results.
@@ -3050,7 +3116,7 @@ fn process_test_string(whole_string: &str, pool: &InternPool) -> ScannerTestResu
     let mut tokens = Vec::new();
     let diagnostics = Rc::new(RefCell::new(Vec::new()));
     let reporter = SinkReporter::new(diagnostics.clone());
-    let handler = SpanReporter::with_reporter(Box::new(reporter));
+    let handler = Handler::with_reporter(Box::new(reporter));
 
     let mut scanner = StringScanner::new(whole_string, pool, &handler);
 
@@ -3106,36 +3172,42 @@ fn partition_diagnostics(diagnostics: &[(Severity, Span)]) -> (Vec<Span>, Vec<Sp
     return (fatals, errors);
 }
 
-/// Prints out and verifies produced results. Returns Some 1-based index of the first incorrect
-/// item, or None if the actual results are equal to expected ones.
-fn verify<T, F>(title: &str, expected: &[T], actual: &[T], to_string: F) -> Option<u32>
+/// Prints out and verifies produced results.
+///
+/// Returns Ok if everything is fine or an Err with a string to be shown the user.
+fn verify<T, F>(title: &str, expected: &[T], actual: &[T], to_string: F) -> Result<(), String>
     where T: Eq, F: Fn(&T) -> String
 {
-    if expected.is_empty() && actual.is_empty() {
-        return None;
-    }
+    let mut report = String::new();
 
-    print!("\n{}\n\nindex:\n\t<expected>\n\t<actual>\n", title);
+    writeln!(&mut report, "{}", title).unwrap();
 
-    let mut first_mismatch = None;
+    let diff = sequence::diff(actual, expected);
 
-    for (index, (expected, actual)) in (1..).zip(longest_zip(expected, actual)) {
-        let bad = actual != expected;
+    let mut okay = true;
 
-        if bad && first_mismatch.is_none() {
-            first_mismatch = Some(index);
+    for entry in diff {
+        match entry {
+            Diff::Equal(ref actual, _) => {
+                writeln!(&mut report, "  {}", to_string(actual)).unwrap();
+            }
+            Diff::Replace(ref actual, ref expected) => {
+                okay = false;
+                writeln!(&mut report, "- {}", to_string(actual)).unwrap();
+                writeln!(&mut report, "+ {}", to_string(expected)).unwrap();
+            }
+            Diff::Left(ref actual) => {
+                okay = false;
+                writeln!(&mut report, "- {}", to_string(actual)).unwrap();
+            }
+            Diff::Right(ref expected) => {
+                okay = false;
+                writeln!(&mut report, "+ {}", to_string(expected)).unwrap();
+            }
         }
-
-        print!("{index}:\n{ind_ex}\t{expected}\n{ind_act}\t{actual}\n",
-            index     = index,
-            ind_ex    = if bad { "-- exp:" } else { "" },
-            ind_act   = if bad { "-- act:" } else { "" },
-            expected  = expected.map_or("None".to_string(), &to_string),
-            actual    = actual.  map_or("None".to_string(), &to_string),
-        );
     }
 
-    return first_mismatch;
+    return if okay { Ok(()) } else { Err(report) };
 }
 
 fn print_token(token: &ScannedToken, buf: &str, pool: &InternPool) -> String {
@@ -3163,6 +3235,11 @@ fn pretty_print_token(token: &Token, pool: &InternPool) -> String {
         Token::ImplicitSymbol(atom) => format!("ImplicitSymbol({:?})", pool.get(atom)),
         Token::ExplicitSymbol(atom) => format!("ExplicitSymbol({:?})", pool.get(atom)),
 
+        Token::Keyword(ref keyword) => format!("Keyword({})", match *keyword {
+            Keyword::Library => "library",
+            Keyword::Module => "module",
+        }),
+
         Token::Literal(ref lit, ref suffix) => pretty_print_literal(lit, suffix, pool),
 
         _ => format!("{:?}", token)
@@ -3183,46 +3260,4 @@ fn pretty_print_literal(lit: &Lit, suffix: &Option<Atom>, pool: &InternPool) -> 
     } else {
         format!("Literal({})", expr)
     }
-}
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-// Test utilities
-
-struct LongestZip<A, B> {
-    a: A,
-    b: B,
-}
-
-impl<A, B> Iterator for LongestZip<A, B> where A: Iterator, B: Iterator {
-    type Item = (Option<A::Item>, Option<B::Item>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let v_a = self.a.next();
-        let v_b = self.b.next();
-
-        if v_a.is_some() || v_b.is_some() {
-            return Some((v_a, v_b));
-        } else {
-            return None;
-        }
-    }
-}
-
-/// Returns an iterator which simulataneously walks over two other iterators until _both_ of
-/// them are exhausted. It is similar to `zip()` method of `Iterator`, but it does not stop
-/// when one of the iterators in exhausted.
-///
-/// Example:
-/// ```
-/// assert_eq!(longest_zip(&[1, 2, 3], &[5, 6]).collect::<Vec<_>>(),
-///     &[
-///         (Some(&1), Some(&5)),
-///         (Some(&2), Some(&6)),
-///         (Some(&3), None)
-///     ]);
-/// ```
-fn longest_zip<A, B>(iter1: A, iter2: B) -> LongestZip<A::IntoIter, B::IntoIter>
-    where A: IntoIterator, B: IntoIterator
-{
-    LongestZip { a: iter1.into_iter(), b: iter2.into_iter() }
 }
